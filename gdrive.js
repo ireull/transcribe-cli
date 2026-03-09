@@ -1,13 +1,14 @@
 import { google } from 'googleapis';
-import { createWriteStream, existsSync, readFileSync, copyFileSync } from 'fs';
+import { createWriteStream, existsSync, readFileSync, copyFileSync, mkdirSync } from 'fs';
 import { join, basename, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
 
-// SA-ключ всегда рядом со скриптом — работает и локально, и после npm i -g
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const SA_KEY_PATH = join(SCRIPT_DIR, 'service-account.json');
+// SA-ключ в ~/.transcribe/ — не зависит от npm, переживает обновления
+const CONFIG_DIR = join(homedir(), '.transcribe');
+const SA_KEY_PATH = join(CONFIG_DIR, 'service-account.json');
 
 /**
  * Проверяет наличие SA-ключа.
@@ -20,12 +21,8 @@ export function getSaKeyPath() {
   return SA_KEY_PATH;
 }
 
-export function getScriptDir() {
-  return SCRIPT_DIR;
-}
-
 /**
- * Импортирует SA-ключ из указанного файла в папку скрипта.
+ * Импортирует SA-ключ из указанного файла.
  * Проверяет что файл — валидный SA JSON.
  * Возвращает { ok, error? }
  */
@@ -34,11 +31,11 @@ export function importSaKey(sourcePath) {
     const raw = readFileSync(sourcePath, 'utf-8');
     const data = JSON.parse(raw);
 
-    // Проверяем что это SA-ключ, а не рандомный JSON
     if (!data.client_email || !data.private_key) {
       return { ok: false, error: 'Файл не похож на SA-ключ (нет client_email или private_key).' };
     }
 
+    mkdirSync(CONFIG_DIR, { recursive: true });
     copyFileSync(sourcePath, SA_KEY_PATH);
     return { ok: true, email: data.client_email };
   } catch (e) {
@@ -53,11 +50,7 @@ function getDriveClient() {
   if (!existsSync(SA_KEY_PATH)) {
     throw new Error(
       `SA-ключ не найден: ${SA_KEY_PATH}\n` +
-      `  1. Создайте Service Account в Google Cloud Console\n` +
-      `  2. Включите Google Drive API\n` +
-      `  3. Скачайте JSON-ключ → service-account.json\n` +
-      `  4. Положите его в: ${SCRIPT_DIR}\n` +
-      `  5. Расшарьте папку Meet Recordings на email SA`
+      `  Добавьте через: transcribe → Meet → выбрать файл`
     );
   }
 

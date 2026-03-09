@@ -1,8 +1,9 @@
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-export const CONFIG_PATH = join(homedir(), '.transcribe.json');
+const CONFIG_DIR = join(homedir(), '.transcribe');
+export const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 const DEFAULTS = {
   lang: 'ru',
@@ -24,6 +25,7 @@ export function loadConfig() {
 
 export function saveConfig(cfg) {
   try {
+    mkdirSync(CONFIG_DIR, { recursive: true });
     writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
   } catch {}
 }

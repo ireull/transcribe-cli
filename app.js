@@ -1,16 +1,16 @@
 import { select, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, statSync, mkdtempSync, rmSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { existsSync, statSync } from 'fs';
+import { homedir } from 'os';
 import { dirname, basename, resolve, join } from 'path';
 import { execSync } from 'child_process';
 
 import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
 import { pickFile, pickFiles, pickFolder, pickJsonFile } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
-import { runTranscription, isUrl } from './transcribe.js';
-import { hasSaKey, getSaKeyPath, getScriptDir, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate } from './gdrive.js';
+import { runTranscription, isUrl, makeTmp, cleanTmp } from './transcribe.js';
+import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate } from './gdrive.js';
 
 // ─── Переименование спикеров ────────────────────────────────────────
 
@@ -37,6 +37,30 @@ async function askSpeakerNames(previews) {
     }
   }
   return names;
+}
+
+// ─── Обработка ошибки ключа Deepgram ────────────────────────────────
+
+async function handleDeepgramAuthError(cfg) {
+  console.log();
+  console.log(chalk.yellow('  Ключ Deepgram невалидный или закончился.'));
+  const action = await select({
+    message: 'Что делаем?',
+    choices: [
+      { name: '🔑  Ввести новый ключ', value: 'new' },
+      { name: '↩️   Назад', value: 'back' },
+    ],
+  });
+  if (action === 'new') {
+    const k = await input({ message: 'Новый API-ключ Deepgram:' });
+    if (k.trim()) {
+      cfg.apiKey = k.trim();
+      saveConfig(cfg);
+      console.log(chalk.green('  Сохранено. Попробуйте снова.'));
+      return k.trim();
+    }
+  }
+  return null;
 }
 
 // ─── UI ─────────────────────────────────────────────────────────────
@@ -266,7 +290,7 @@ async function runMeetMode(apiKey, cfg) {
   const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir());
 
   // Скачиваем во временную папку
-  const tmpDir = mkdtempSync(join(tmpdir(), 'transcribe-meet-'));
+  const tmpDir = makeTmp();
 
   try {
     const filePath = await downloadFile(drive, selectedFile.id, selectedFile.name, tmpDir);
@@ -275,7 +299,7 @@ async function runMeetMode(apiKey, cfg) {
   } catch (e) {
     console.log(chalk.red(`  Ошибка: ${e.message}`));
   } finally {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    cleanTmp(tmpDir);
   }
 }
 
@@ -345,10 +369,13 @@ async function editSettings(cfg) {
 async function interactiveMenu() {
   showHeader();
   const cfg = loadConfig();
-  const apiKey = await ensureApiKey(cfg);
+  let apiKey = await ensureApiKey(cfg);
   await firstRunSetup(cfg);
 
   while (true) {
+    console.clear();
+    showHeader();
+
     const choices = [
       { name: '📁  Файл → транскрипт', value: 'file' },
       { name: '📁  Несколько файлов (batch)', value: 'batch' },
@@ -363,13 +390,22 @@ async function interactiveMenu() {
     if (mode === 'exit') { console.log(chalk.dim('  Пока!')); break; }
     if (mode === 'settings') { await editSettings(cfg); continue; }
 
-    if (mode === 'meet') {
-      await runMeetMode(apiKey, cfg);
-    } else {
-      const { lang, speakers } = await askOptions(cfg);
-      if (mode === 'file') await runFileMode(apiKey, lang, speakers, cfg);
-      else if (mode === 'batch') await runBatchMode(apiKey, lang, speakers, cfg);
-      else if (mode === 'url') await runUrlMode(apiKey, lang, speakers, cfg);
+    try {
+      if (mode === 'meet') {
+        await runMeetMode(apiKey, cfg);
+      } else {
+        const { lang, speakers } = await askOptions(cfg);
+        if (mode === 'file') await runFileMode(apiKey, lang, speakers, cfg);
+        else if (mode === 'batch') await runBatchMode(apiKey, lang, speakers, cfg);
+        else if (mode === 'url') await runUrlMode(apiKey, lang, speakers, cfg);
+      }
+    } catch (e) {
+      if (e.isAuthError) {
+        const newKey = await handleDeepgramAuthError(cfg);
+        if (newKey) apiKey = newKey;
+        continue;
+      }
+      throw e;
     }
 
     console.log();

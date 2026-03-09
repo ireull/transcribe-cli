@@ -4,36 +4,60 @@ CLI для транскрипции аудио/видео через Deepgram.
 
 ## Установка
 
+### Windows
+
+```powershell
+cd transcribe-cli
+install.bat
+```
+
+### macOS
+
 ```bash
 cd transcribe-cli
-npm install
-npm install -g .
+chmod +x install.sh
+./install.sh
 ```
 
-При установке `service-account.json` автоматически скопируется в глобальную папку.
+Готово. `transcribe` работает из любого терминала. Папку с исходниками можно удалить.
 
-## Google Meet записи (SA)
+## Перед установкой — системные зависимости
 
-Один раз:
+```bash
+# ffmpeg
+brew install ffmpeg          # macOS
+choco install ffmpeg         # Windows
+
+# yt-dlp (для режима ссылок)
+pip install yt-dlp
+```
+
+## Первый запуск
+
+```
+> transcribe
+
+  Введите API-ключ Deepgram: dg-...
+  Ключ сохранен.
+
+  Добавить ярлык на рабочий стол? Yes
+  ✓ Ярлык создан
+```
+
+## Google Meet
+
+При первом выборе «Google Meet → транскрипт» CLI предложит выбрать `service-account.json` через диалог. Сам скопирует куда надо.
+
+Подготовка SA (один раз):
 
 1. Google Cloud Console → создать проект
-2. APIs → включить **Google Drive API**
+2. APIs → включить Google Drive API
 3. IAM → Service Accounts → создать SA
 4. Keys → Add Key → JSON → скачать
-5. Положить `service-account.json` в папку проекта (перед `npm i -g .`)
-6. Google Drive → папка Meet Recordings → Share → email SA
+5. Google Drive → папка Meet Recordings → Share → email SA
 
-Если ключ добавляете после установки — запустите `transcribe`, выберите Meet, CLI предложит выбрать файл через диалог.
+## Удаление
 
-## Структура
-
-```
-cli.js          # entry point
-app.js          # меню, CLI
-transcribe.js   # yt-dlp → ffmpeg → Deepgram → .md
-gdrive.js       # Google Drive SA
-dialogs.js      # нативные диалоги файлов
-shortcut.js     # ярлык на рабочий стол
-config.js       # ~/.transcribe.json
-postinstall.js  # автокопирование SA-ключа при npm i -g
+```bash
+npm uninstall -g transcribe-cli
 ```
