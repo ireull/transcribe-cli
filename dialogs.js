@@ -104,3 +104,29 @@ function pickFolderWin(dir) {
   ].filter(Boolean).join('; ');
   return runPs(ps) || null;
 }
+
+/**
+ * Открывает диалог выбора JSON-файла (для SA-ключа).
+ */
+export function pickJsonFile(initialDir = '') {
+  try {
+    if (IS_MAC) {
+      const clause = initialDir ? `default location POSIX file "${initialDir}"` : '';
+      const script = `set f to choose file ${clause} with prompt "Выберите service-account.json" of type {"public.json"}\nreturn POSIX path of f`;
+      return execSync(`osascript -e '${script}'`, { encoding: 'utf-8', timeout: 120000 }).trim() || null;
+    }
+    if (IS_WIN) {
+      const initDir = initialDir ? initialDir.replace(/\//g, '\\') : '';
+      const ps = [
+        'Add-Type -AssemblyName System.Windows.Forms',
+        '$d = New-Object System.Windows.Forms.OpenFileDialog',
+        "$d.Title = 'Select service-account.json'",
+        "$d.Filter = 'JSON|*.json|All|*.*'",
+        initDir ? `$d.InitialDirectory = '${initDir}'` : '',
+        "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.FileName }",
+      ].filter(Boolean).join('; ');
+      return runPs(ps) || null;
+    }
+    return null;
+  } catch { return null; }
+}

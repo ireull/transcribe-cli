@@ -1,14 +1,16 @@
 import { select, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
-import { existsSync, statSync } from 'fs';
-import { homedir } from 'os';
-import { dirname, basename, resolve } from 'path';
+import ora from 'ora';
+import { existsSync, statSync, mkdtempSync, rmSync } from 'fs';
+import { homedir, tmpdir } from 'os';
+import { dirname, basename, resolve, join } from 'path';
 import { execSync } from 'child_process';
 
 import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
-import { pickFile, pickFiles, pickFolder } from './dialogs.js';
+import { pickFile, pickFiles, pickFolder, pickJsonFile } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl } from './transcribe.js';
+import { hasSaKey, getSaKeyPath, getScriptDir, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate } from './gdrive.js';
 
 // ─── Переименование спикеров ────────────────────────────────────────
 
@@ -175,6 +177,108 @@ async function runUrlMode(apiKey, lang, speakers, cfg) {
   await runTranscription(url.trim(), { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
 }
 
+async function runMeetMode(apiKey, cfg) {
+  // Проверка SA-ключа — если нет, предлагаем импортировать
+  if (!hasSaKey()) {
+    console.log();
+    console.log(chalk.yellow('  SA-ключ не найден.'));
+    console.log();
+
+    const action = await select({
+      message: 'Что делаем?',
+      choices: [
+        { name: '📂  Выбрать service-account.json', value: 'pick' },
+        { name: '📋  Показать инструкцию', value: 'help' },
+        { name: '↩️   Назад', value: 'back' },
+      ],
+    });
+
+    if (action === 'back') return;
+
+    if (action === 'help') {
+      console.log();
+      console.log(chalk.dim('  1. Google Cloud Console → создать проект'));
+      console.log(chalk.dim('  2. Включить Google Drive API'));
+      console.log(chalk.dim('  3. IAM → Service Accounts → создать SA'));
+      console.log(chalk.dim('  4. Скачать JSON-ключ'));
+      console.log(chalk.dim('  5. Расшарить папку Meet Recordings на email SA'));
+      console.log(chalk.dim('  6. Затем: transcribe → Meet → выбрать файл ключа'));
+      console.log();
+      return;
+    }
+
+    if (action === 'pick') {
+      console.log(chalk.dim('  Открываю диалог...'));
+      const keyFile = pickJsonFile(homedir());
+      if (!keyFile) {
+        console.log(chalk.yellow('  Отменено.'));
+        return;
+      }
+
+      const result = importSaKey(keyFile);
+      if (!result.ok) {
+        console.log(chalk.red(`  Ошибка: ${result.error}`));
+        return;
+      }
+
+      console.log(chalk.green(`  ✓ SA-ключ установлен (${result.email})`));
+      console.log(chalk.dim(`    Скопирован в: ${getSaKeyPath()}`));
+      console.log(chalk.dim(`    Расшарьте папку Meet Recordings на: ${result.email}`));
+      console.log();
+      // Не return — продолжаем к списку записей
+    }
+  }
+
+  console.log();
+  const spinner = ora({ text: chalk.cyan('Загружаю список записей...'), spinner: 'dots' }).start();
+
+  let drive, files;
+  try {
+    ({ drive, files } = await getMeetRecordings(20));
+    spinner.succeed(`Найдено записей: ${files.length}`);
+  } catch (e) {
+    spinner.fail(chalk.red(`Ошибка: ${e.message}`));
+    return;
+  }
+
+  if (files.length === 0) {
+    console.log(chalk.yellow('  Записей не найдено. Проверьте, расшарена ли папка на SA.'));
+    return;
+  }
+
+  // Показываем список для выбора
+  const choices = files.map(f => ({
+    name: `${f.name}  ${chalk.dim(`(${formatSize(f.size)}, ${formatDate(f.createdTime)})`)}`,
+    value: f.id,
+  }));
+  choices.push({ name: chalk.dim('↩️  Назад'), value: 'back' });
+
+  const selectedId = await select({ message: 'Какую запись транскрибировать?', choices });
+  if (selectedId === 'back') return;
+
+  const selectedFile = files.find(f => f.id === selectedId);
+  if (!selectedFile) return;
+
+  // Опции транскрипции
+  const { lang, speakers } = await askOptions(cfg);
+
+  // Куда сохранить
+  const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir());
+
+  // Скачиваем во временную папку
+  const tmpDir = mkdtempSync(join(tmpdir(), 'transcribe-meet-'));
+
+  try {
+    const filePath = await downloadFile(drive, selectedFile.id, selectedFile.name, tmpDir);
+    console.log();
+    await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+  } catch (e) {
+    console.log(chalk.red(`  Ошибка: ${e.message}`));
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 // ─── Настройки ──────────────────────────────────────────────────────
 
 async function editSettings(cfg) {
@@ -184,6 +288,7 @@ async function editSettings(cfg) {
     message: 'Настройки',
     choices: [
       { name: '🔑  Изменить API-ключ', value: 'key' },
+      { name: hasSaKey() ? '🔄  Заменить SA-ключ (Google Drive)' : '📂  Добавить SA-ключ (Google Drive)', value: 'sa' },
       { name: '📂  Сменить папку', value: 'dir' },
       { name: hasShortcut ? '🗑️   Удалить ярлык' : '🖥️   Добавить ярлык', value: 'shortcut' },
       { name: '🔍  Показать текущие', value: 'show' },
@@ -195,6 +300,19 @@ async function editSettings(cfg) {
   if (action === 'key') {
     const k = await input({ message: 'Новый API-ключ:' });
     if (k.trim()) { cfg.apiKey = k.trim(); saveConfig(cfg); console.log(chalk.green('  Сохранено.')); }
+  } else if (action === 'sa') {
+    console.log(chalk.dim('  Выберите service-account.json...'));
+    const keyFile = pickJsonFile(homedir());
+    if (!keyFile) { console.log(chalk.yellow('  Отменено.')); }
+    else {
+      const result = importSaKey(keyFile);
+      if (result.ok) {
+        console.log(chalk.green(`  ✓ SA-ключ установлен (${result.email})`));
+        console.log(chalk.dim(`    Расшарьте папку Meet Recordings на: ${result.email}`));
+      } else {
+        console.log(chalk.red(`  Ошибка: ${result.error}`));
+      }
+    }
   } else if (action === 'dir') {
     console.log(chalk.dim('  Открываю диалог...'));
     const p = pickFolder(cfg.lastOutputDir || '');
@@ -213,6 +331,7 @@ async function editSettings(cfg) {
     console.log(chalk.cyan('  │') + ` Спикеры:   ${cfg.speakers?'да':'нет'}`);
     console.log(chalk.cyan('  │') + ` Папка:     ${cfg.lastOutputDir||chalk.dim('рядом с файлом')}`);
     console.log(chalk.cyan('  │') + ` Ярлык:     ${shortcutExists()?chalk.green('✓ есть'):chalk.dim('нет')}`);
+    console.log(chalk.cyan('  │') + ` SA-ключ:   ${hasSaKey()?chalk.green('✓')+' '+getSaKeyPath():chalk.dim('нет')}`);
     console.log(chalk.cyan('  │') + ` ffmpeg:    ${has('ffmpeg')?chalk.green('✓'):chalk.red('✗')}`);
     console.log(chalk.cyan('  │') + ` yt-dlp:    ${has('yt-dlp')?chalk.green('✓'):chalk.red('✗')}`);
     console.log(chalk.cyan('  │') + ` Конфиг:    ${CONFIG_PATH}`);
@@ -230,24 +349,28 @@ async function interactiveMenu() {
   await firstRunSetup(cfg);
 
   while (true) {
-    const mode = await select({
-      message: 'Что делаем?',
-      choices: [
-        { name: '📁  Файл → транскрипт', value: 'file' },
-        { name: '📁  Несколько файлов (batch)', value: 'batch' },
-        { name: '🔗  Ссылка → транскрипт', value: 'url' },
-        { name: '⚙️   Настройки', value: 'settings' },
-        { name: '👋  Выход', value: 'exit' },
-      ],
-    });
+    const choices = [
+      { name: '📁  Файл → транскрипт', value: 'file' },
+      { name: '📁  Несколько файлов (batch)', value: 'batch' },
+      { name: '🔗  Ссылка → транскрипт', value: 'url' },
+      { name: '📹  Google Meet → транскрипт', value: 'meet' },
+      { name: '⚙️   Настройки', value: 'settings' },
+      { name: '👋  Выход', value: 'exit' },
+    ];
+
+    const mode = await select({ message: 'Что делаем?', choices });
 
     if (mode === 'exit') { console.log(chalk.dim('  Пока!')); break; }
     if (mode === 'settings') { await editSettings(cfg); continue; }
 
-    const { lang, speakers } = await askOptions(cfg);
-    if (mode === 'file') await runFileMode(apiKey, lang, speakers, cfg);
-    else if (mode === 'batch') await runBatchMode(apiKey, lang, speakers, cfg);
-    else if (mode === 'url') await runUrlMode(apiKey, lang, speakers, cfg);
+    if (mode === 'meet') {
+      await runMeetMode(apiKey, cfg);
+    } else {
+      const { lang, speakers } = await askOptions(cfg);
+      if (mode === 'file') await runFileMode(apiKey, lang, speakers, cfg);
+      else if (mode === 'batch') await runBatchMode(apiKey, lang, speakers, cfg);
+      else if (mode === 'url') await runUrlMode(apiKey, lang, speakers, cfg);
+    }
 
     console.log();
     if (!(await confirm({ message: 'Еще?', default: true }))) { console.log(chalk.dim('  Пока!')); break; }

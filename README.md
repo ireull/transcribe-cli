@@ -10,25 +10,30 @@ npm install
 npm install -g .
 ```
 
-Готово. `transcribe` работает из любого места.
+При установке `service-account.json` автоматически скопируется в глобальную папку.
 
-При первом запуске попросит API-ключ и предложит ярлык на рабочий стол.
+## Google Meet записи (SA)
 
-## Удаление
+Один раз:
 
-```bash
-npm uninstall -g transcribe-cli
+1. Google Cloud Console → создать проект
+2. APIs → включить **Google Drive API**
+3. IAM → Service Accounts → создать SA
+4. Keys → Add Key → JSON → скачать
+5. Положить `service-account.json` в папку проекта (перед `npm i -g .`)
+6. Google Drive → папка Meet Recordings → Share → email SA
+
+Если ключ добавляете после установки — запустите `transcribe`, выберите Meet, CLI предложит выбрать файл через диалог.
+
+## Структура
+
 ```
-
-## Структура (все файлы в корне)
-
-```
-transcribe-cli/
-  cli.js          # entry point
-  app.js          # меню, CLI-аргументы
-  transcribe.js   # yt-dlp → ffmpeg → Deepgram → .md
-  dialogs.js      # нативные диалоги файлов
-  shortcut.js     # ярлык на рабочий стол
-  config.js       # ~/.transcribe.json
-  package.json
+cli.js          # entry point
+app.js          # меню, CLI
+transcribe.js   # yt-dlp → ffmpeg → Deepgram → .md
+gdrive.js       # Google Drive SA
+dialogs.js      # нативные диалоги файлов
+shortcut.js     # ярлык на рабочий стол
+config.js       # ~/.transcribe.json
+postinstall.js  # автокопирование SA-ключа при npm i -g
 ```
