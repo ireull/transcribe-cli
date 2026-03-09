@@ -41,10 +41,14 @@ function checkBin(name, hint) {
   }
 }
 
+// Окружение для subprocess — принудительный UTF-8 для yt-dlp (Python)
+const SUBPROCESS_ENV = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+
 function getVideoTitle(url) {
   try {
     return execSync(`yt-dlp --get-title --no-playlist "${url}"`, {
       encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'],
+      env: SUBPROCESS_ENV,
     }).trim().slice(0, 200);
   } catch { return ''; }
 }
@@ -54,6 +58,7 @@ function downloadAudio(url, tmp) {
   const out = join(tmp, 'audio.%(ext)s');
   execSync(`yt-dlp -x --audio-format wav --audio-quality 0 -o "${out}" --no-playlist --quiet "${url}"`, {
     stdio: ['pipe', 'pipe', 'pipe'], timeout: 600000,
+    env: SUBPROCESS_ENV,
   });
   const f = readdirSync(tmp).find(f => f.startsWith('audio'));
   if (!f) throw new Error('Скачанный файл не найден');
@@ -90,7 +95,7 @@ async function callDeepgram(filePath, model, language, speakers, apiKey) {
   return resp.json();
 }
 
-function formatMarkdown(data, speakers, title = '') {
+function formatMarkdown(data, speakers, title = '', speakerNames = {}) {
   const lines = [];
   if (title) lines.push(`# ${title}`, '');
 
@@ -107,7 +112,11 @@ function formatMarkdown(data, speakers, title = '') {
   if (speakers && results.utterances) {
     let cur = null;
     for (const u of results.utterances) {
-      if (u.speaker !== cur) { cur = u.speaker; lines.push(`**Speaker ${cur ?? '?'}:**`); }
+      if (u.speaker !== cur) {
+        cur = u.speaker;
+        const name = speakerNames[cur] || `Speaker ${cur ?? '?'}`;
+        lines.push(`**${name}:**`);
+      }
       lines.push(u.transcript || '', '');
     }
     return lines.join('\n');
@@ -125,7 +134,24 @@ function formatMarkdown(data, speakers, title = '') {
   return lines.join('\n');
 }
 
-export async function runTranscription(source, { speakers, lang, model = 'nova-3', apiKey, outputDir }) {
+/**
+ * Извлекает уникальных спикеров и первую реплику каждого.
+ * Возвращает [{id, firstLine}]
+ */
+export function getSpeakerPreviews(data) {
+  const utterances = data?.results?.utterances || [];
+  const seen = new Map();
+  for (const u of utterances) {
+    const id = u.speaker;
+    if (id != null && !seen.has(id)) {
+      const preview = (u.transcript || '').slice(0, 80);
+      seen.set(id, preview + (u.transcript.length > 80 ? '...' : ''));
+    }
+  }
+  return [...seen.entries()].map(([id, firstLine]) => ({ id, firstLine }));
+}
+
+export async function runTranscription(source, { speakers, lang, model = 'nova-3', apiKey, outputDir, onSpeakers }) {
   const tmp = makeTmp();
   let baseName = 'transcript', title = '';
   const spinner = ora({ text: chalk.cyan('Подготовка...'), spinner: 'dots' }).start();
@@ -161,12 +187,21 @@ export async function runTranscription(source, { speakers, lang, model = 'nova-3
     const raw = await callDeepgram(audioPath, model, lang, speakers, apiKey);
     spinner.succeed('Транскрибировано');
 
+    // Переименование спикеров
+    let speakerNames = {};
+    if (speakers && onSpeakers) {
+      const previews = getSpeakerPreviews(raw);
+      if (previews.length > 1) {
+        speakerNames = await onSpeakers(previews);
+      }
+    }
+
     // Сохранение
     mkdirSync(outputDir, { recursive: true });
     let outPath = join(outputDir, `${baseName}.md`);
     let c = 1;
     while (existsSync(outPath)) { outPath = join(outputDir, `${baseName}_${c++}.md`); }
-    writeFileSync(outPath, formatMarkdown(raw, speakers, title), 'utf-8');
+    writeFileSync(outPath, formatMarkdown(raw, speakers, title, speakerNames), 'utf-8');
 
     // Итог
     const d = raw?.metadata?.duration;

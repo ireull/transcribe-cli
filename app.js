@@ -10,6 +10,33 @@ import { pickFile, pickFiles, pickFolder } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl } from './transcribe.js';
 
+// ─── Переименование спикеров ────────────────────────────────────────
+
+async function askSpeakerNames(previews) {
+  console.log();
+  console.log(chalk.cyan('  Найдены спикеры:'));
+  console.log();
+  for (const { id, firstLine } of previews) {
+    console.log(`  ${chalk.bold(`Speaker ${id}`)}: ${chalk.dim(`"${firstLine}"`)}`);
+  }
+  console.log();
+
+  const wantRename = await confirm({ message: 'Переименовать спикеров?', default: true });
+  if (!wantRename) return {};
+
+  const names = {};
+  for (const { id, firstLine } of previews) {
+    const name = await input({
+      message: `Speaker ${id} (${firstLine.slice(0, 40)}...):`,
+      default: `Speaker ${id}`,
+    });
+    if (name.trim() && name.trim() !== `Speaker ${id}`) {
+      names[id] = name.trim();
+    }
+  }
+  return names;
+}
+
 // ─── UI ─────────────────────────────────────────────────────────────
 
 function showHeader() {
@@ -119,7 +146,7 @@ async function runFileMode(apiKey, lang, speakers, cfg) {
 
   const outputDir = await askOutputDir(cfg, dirname(filePath));
   console.log();
-  await runTranscription(filePath, { speakers, lang, apiKey, outputDir });
+  await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
 }
 
 async function runBatchMode(apiKey, lang, speakers, cfg) {
@@ -135,7 +162,7 @@ async function runBatchMode(apiKey, lang, speakers, cfg) {
   console.log();
   for (let i = 0; i < files.length; i++) {
     console.log(chalk.cyan(`── [${i+1}/${files.length}] ${basename(files[i])} ──`));
-    try { await runTranscription(files[i], { speakers, lang, apiKey, outputDir }); }
+    try { await runTranscription(files[i], { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined }); }
     catch (e) { console.log(chalk.red(`  Ошибка: ${e.message}`)); }
   }
 }
@@ -145,7 +172,7 @@ async function runUrlMode(apiKey, lang, speakers, cfg) {
   if (!isUrl(url)) { console.log(chalk.red('  Нужна ссылка http(s)://')); return; }
   const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir());
   console.log();
-  await runTranscription(url.trim(), { speakers, lang, apiKey, outputDir });
+  await runTranscription(url.trim(), { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
 }
 
 // ─── Настройки ──────────────────────────────────────────────────────
