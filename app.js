@@ -3,13 +3,13 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { existsSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, basename, resolve, join } from 'path';
+import { dirname, basename, resolve } from 'path';
 import { execSync } from 'child_process';
 
 import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
 import { pickFile, pickFiles, pickFolder, pickJsonFile } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
-import { runTranscription, isUrl, makeTmp, cleanTmp } from './transcribe.js';
+import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
 import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate } from './gdrive.js';
 
 // ─── Переименование спикеров ────────────────────────────────────────
@@ -17,9 +17,12 @@ import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, f
 async function askSpeakerNames(previews) {
   console.log();
   console.log(chalk.cyan('  Найдены спикеры:'));
-  console.log();
-  for (const { id, firstLine } of previews) {
-    console.log(`  ${chalk.bold(`Speaker ${id}`)}: ${chalk.dim(`"${firstLine}"`)}`);
+  for (const { id, lines } of previews) {
+    console.log();
+    console.log(`  ${chalk.bold(`Speaker ${id}:`)}`);
+    for (const { text, start } of lines) {
+      console.log(`    ${chalk.dim(`[${formatTs(start)}]`)} ${text}`);
+    }
   }
   console.log();
 
@@ -27,9 +30,10 @@ async function askSpeakerNames(previews) {
   if (!wantRename) return {};
 
   const names = {};
-  for (const { id, firstLine } of previews) {
+  for (const { id, lines } of previews) {
+    const hint = lines[0]?.text.slice(0, 60) || '';
     const name = await input({
-      message: `Speaker ${id} (${firstLine.slice(0, 40)}...):`,
+      message: `Speaker ${id} → (${hint}...):`,
       default: `Speaker ${id}`,
     });
     if (name.trim() && name.trim() !== `Speaker ${id}`) {
@@ -130,10 +134,10 @@ async function askOptions(cfg) {
   return { lang, speakers };
 }
 
-async function askOutputDir(cfg, defaultDir) {
+async function askOutputDir(cfg, defaultDir, label = 'Рядом с файлом') {
   const last = cfg.lastOutputDir || '';
   const choices = [
-    { name: `📂  Рядом с файлом: ${shorten(defaultDir)}`, value: 'source' },
+    { name: `📂  ${label}: ${shorten(defaultDir)}`, value: 'source' },
   ];
   if (last && last !== defaultDir && existsSync(last))
     choices.push({ name: `📂  Прошлая папка: ${shorten(last)}`, value: 'last' });
@@ -287,7 +291,7 @@ async function runMeetMode(apiKey, cfg) {
   const { lang, speakers } = await askOptions(cfg);
 
   // Куда сохранить
-  const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir());
+  const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir(), 'Домашняя папка');
 
   // Скачиваем во временную папку
   const tmpDir = makeTmp();

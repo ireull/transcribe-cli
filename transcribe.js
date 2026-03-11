@@ -95,6 +95,16 @@ async function callDeepgram(filePath, model, language, speakers, apiKey) {
   return resp.json();
 }
 
+export function formatTs(sec) {
+  const s = Math.floor(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return h
+    ? `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`
+    : `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+}
+
 function formatMarkdown(data, speakers, title = '', speakerNames = {}) {
   const lines = [];
   if (title) lines.push(`# ${title}`, '');
@@ -110,13 +120,10 @@ function formatMarkdown(data, speakers, title = '', speakerNames = {}) {
   const results = data?.results || {};
 
   if (speakers && results.utterances) {
-    let cur = null;
     for (const u of results.utterances) {
-      if (u.speaker !== cur) {
-        cur = u.speaker;
-        const name = speakerNames[cur] || `Speaker ${cur ?? '?'}`;
-        lines.push(`**${name}:**`);
-      }
+      const name = speakerNames[u.speaker] || `Speaker ${u.speaker ?? '?'}`;
+      const ts = formatTs(u.start ?? 0);
+      lines.push(`**${name}** [${ts}]`);
       lines.push(u.transcript || '', '');
     }
     return lines.join('\n');
@@ -135,20 +142,23 @@ function formatMarkdown(data, speakers, title = '', speakerNames = {}) {
 }
 
 /**
- * Извлекает уникальных спикеров и первую реплику каждого.
- * Возвращает [{id, firstLine}]
+ * Извлекает уникальных спикеров и несколько реплик каждого с таймстампами.
+ * Возвращает [{id, lines: [{text, start}]}]
  */
 export function getSpeakerPreviews(data) {
   const utterances = data?.results?.utterances || [];
   const seen = new Map();
   for (const u of utterances) {
     const id = u.speaker;
-    if (id != null && !seen.has(id)) {
-      const preview = (u.transcript || '').slice(0, 80);
-      seen.set(id, preview + (u.transcript.length > 80 ? '...' : ''));
+    if (id != null) {
+      if (!seen.has(id)) seen.set(id, []);
+      const lines = seen.get(id);
+      if (lines.length < 4) {
+        lines.push({ text: (u.transcript || '').trim(), start: u.start ?? 0 });
+      }
     }
   }
-  return [...seen.entries()].map(([id, firstLine]) => ({ id, firstLine }));
+  return [...seen.entries()].map(([id, lines]) => ({ id, lines }));
 }
 
 export async function runTranscription(source, { speakers, lang, model = 'nova-3', apiKey, outputDir, onSpeakers }) {
