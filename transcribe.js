@@ -13,12 +13,12 @@ const MIME_MAP = {
   '.flac': 'audio/flac', '.m4a': 'audio/mp4', '.opus': 'audio/opus', '.webm': 'audio/webm',
 };
 
-function makeTmp() {
+export function makeTmp() {
   const d = join(tmpdir(), `transcribe-${randomBytes(4).toString('hex')}`);
   mkdirSync(d, { recursive: true });
   return d;
 }
-function cleanTmp(d) { try { rmSync(d, { recursive: true, force: true }); } catch {} }
+export function cleanTmp(d) { try { rmSync(d, { recursive: true, force: true }); } catch {} }
 
 export function isUrl(s) { return /^https?:\/\//.test(s.trim()); }
 
