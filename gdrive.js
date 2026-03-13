@@ -1,10 +1,10 @@
 import { google } from 'googleapis';
 import { createWriteStream, existsSync, readFileSync, copyFileSync, mkdirSync } from 'fs';
-import { join, basename, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
+import { sanitizeFilename } from './transcribe.js';
 
 // SA-ключ в ~/.transcribe/ — не зависит от npm, переживает обновления
 const CONFIG_DIR = join(homedir(), '.transcribe');
@@ -114,7 +114,7 @@ export async function listAllFiles(drive, limit = 20) {
  * Возвращает путь к скачанному файлу.
  */
 export async function downloadFile(drive, fileId, fileName, destDir) {
-  const destPath = join(destDir, fileName);
+  const destPath = join(destDir, sanitizeFilename(fileName));
 
   const spinner = ora({ text: chalk.cyan(`Скачиваю: ${fileName}...`), spinner: 'dots' }).start();
 
