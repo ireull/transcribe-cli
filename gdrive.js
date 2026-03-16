@@ -114,9 +114,11 @@ export async function listAllFiles(drive, limit = 20) {
  * Возвращает путь к скачанному файлу.
  */
 export async function downloadFile(drive, fileId, fileName, destDir) {
-  const destPath = join(destDir, fileName);
+  // Sanitize filename for Windows (replace invalid characters: \ / : * ? " < > |)
+  const safeName = fileName.replace(/[\\/:*?"<>|]/g, '-');
+  const destPath = join(destDir, safeName);
 
-  const spinner = ora({ text: chalk.cyan(`Скачиваю: ${fileName}...`), spinner: 'dots' }).start();
+  const spinner = ora({ text: chalk.cyan(`Скачиваю: ${safeName}...`), spinner: 'dots' }).start();
 
   try {
     const res = await drive.files.get(
@@ -133,7 +135,7 @@ export async function downloadFile(drive, fileId, fileName, destDir) {
         .on('error', reject);
     });
 
-    spinner.succeed(`Скачано: ${fileName}`);
+    spinner.succeed(`Скачано: ${safeName}`);
     return destPath;
   } catch (e) {
     spinner.fail(`Ошибка скачивания: ${e.message}`);
