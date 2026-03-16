@@ -1,10 +1,10 @@
 import { google } from 'googleapis';
 import { createWriteStream, existsSync, readFileSync, copyFileSync, mkdirSync } from 'fs';
-import { join, basename, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
+import { sanitizeFilename } from './transcribe.js';
 
 // SA-ключ в ~/.transcribe/ — не зависит от npm, переживает обновления
 const CONFIG_DIR = join(homedir(), '.transcribe');
