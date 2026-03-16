@@ -114,8 +114,7 @@ export async function listAllFiles(drive, limit = 20) {
  * Возвращает путь к скачанному файлу.
  */
 export async function downloadFile(drive, fileId, fileName, destDir) {
-  // Sanitize filename for Windows (replace invalid characters: \ / : * ? " < > |)
-  const safeName = fileName.replace(/[\\/:*?"<>|]/g, '-');
+  const safeName = sanitizeFilename(fileName);
   const destPath = join(destDir, safeName);
 
   const spinner = ora({ text: chalk.cyan(`Скачиваю: ${safeName}...`), spinner: 'dots' }).start();
