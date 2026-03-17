@@ -163,6 +163,10 @@ export function getSpeakerPreviews(data) {
 
 export async function runTranscription(source, { speakers, lang, model = 'nova-3', apiKey, outputDir, onSpeakers }) {
   const tmp = makeTmp();
+  const cleanup = () => { cleanTmp(tmp); process.exit(1); };
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
+
   let baseName = 'transcript', title = '';
   const spinner = ora({ text: chalk.cyan('Подготовка...'), spinner: 'dots' }).start();
 
@@ -236,5 +240,9 @@ export async function runTranscription(source, { speakers, lang, model = 'nova-3
   } catch (e) {
     spinner.fail(chalk.red(e.message));
     return null;
-  } finally { cleanTmp(tmp); }
+  } finally {
+    process.off('SIGINT', cleanup);
+    process.off('SIGTERM', cleanup);
+    cleanTmp(tmp);
+  }
 }
