@@ -458,7 +458,7 @@ async function interactiveMenu() {
 
     const mode = await select({ message: 'Что делаем?', choices });
 
-    if (mode === 'exit') { console.log(chalk.dim('  Пока!')); break; }
+    if (mode === 'exit') { break; }
     if (mode === 'settings') { await editSettings(cfg); continue; }
 
     try {
