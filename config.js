@@ -12,6 +12,7 @@ const DEFAULTS = {
   lastOpenDir: '',
   apiKey: '',
   shortcutOffered: false,
+  speakerNames: [],
 };
 
 export function loadConfig() {
