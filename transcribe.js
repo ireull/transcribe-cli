@@ -56,12 +56,30 @@ function getVideoTitle(url) {
 function downloadAudio(url, tmp) {
   if (!checkBin('yt-dlp', 'pip install yt-dlp')) process.exit(1);
   const out = join(tmp, 'audio.%(ext)s');
-  execSync(`yt-dlp -x --audio-format wav --audio-quality 0 -o "${out}" --no-playlist --quiet "${url}"`, {
-    stdio: ['pipe', 'pipe', 'pipe'], timeout: 600000,
-    env: SUBPROCESS_ENV,
-  });
+  try {
+    execSync(`yt-dlp -x --audio-format wav --audio-quality 0 -o "${out}" --no-playlist --concurrent-fragments 4 --quiet "${url}"`, {
+      stdio: ['pipe', 'pipe', 'pipe'], timeout: 3600000,
+      env: SUBPROCESS_ENV,
+    });
+  } catch (e) {
+    const stderr = (e.stderr?.toString() || '').trim();
+    if (e.killed || e.signal === 'SIGTERM') {
+      throw new Error('Скачивание прервано: превышен таймаут (60 мин). Попробуйте скачать видео вручную через yt-dlp');
+    }
+    if (stderr.includes('is not a valid URL'))        throw new Error(`Невалидная ссылка: ${url}`);
+    if (stderr.includes('Video unavailable'))          throw new Error('Видео недоступно (удалено, приватное или заблокировано в вашем регионе)');
+    if (stderr.includes('Private video'))              throw new Error('Видео приватное — нет доступа');
+    if (stderr.includes('Sign in to confirm'))         throw new Error('YouTube требует авторизацию для этого видео (возрастное ограничение или региональная блокировка)');
+    if (stderr.includes('This live event will begin')) throw new Error('Стрим ещё не начался — дождитесь начала трансляции');
+    if (stderr.includes('Premieres in'))               throw new Error('Это премьера — видео ещё не вышло');
+    if (stderr.includes('HTTP Error 403'))             throw new Error('Доступ запрещён (403). Попробуйте обновить yt-dlp: pip install -U yt-dlp');
+    if (stderr.includes('HTTP Error 429'))             throw new Error('Слишком много запросов (429). Подождите пару минут и попробуйте снова');
+    if (stderr.includes('Unable to download'))         throw new Error(`Не удалось скачать: ${stderr.split('\n').pop()}`);
+    if (stderr.includes('Unsupported URL'))            throw new Error(`Ссылка не поддерживается: ${url}`);
+    throw new Error(`Ошибка скачивания: ${stderr || e.message}`);
+  }
   const f = readdirSync(tmp).find(f => f.startsWith('audio'));
-  if (!f) throw new Error('Скачанный файл не найден');
+  if (!f) throw new Error('yt-dlp завершился без ошибок, но файл не создан. Попробуйте обновить yt-dlp: pip install -U yt-dlp');
   return join(tmp, f);
 }
 
@@ -69,9 +87,21 @@ function convertToWav(input, tmp) {
   const hint = platform() === 'darwin' ? 'brew install ffmpeg' : 'choco install ffmpeg';
   if (!checkBin('ffmpeg', hint)) process.exit(1);
   const out = join(tmp, 'converted.wav');
-  execSync(`ffmpeg -i "${input}" -vn -acodec pcm_s16le -ar 16000 -ac 1 -y -loglevel error "${out}"`, {
-    stdio: ['pipe', 'pipe', 'pipe'], timeout: 600000,
-  });
+  try {
+    execSync(`ffmpeg -i "${input}" -vn -acodec pcm_s16le -ar 16000 -ac 1 -y -loglevel error "${out}"`, {
+      stdio: ['pipe', 'pipe', 'pipe'], timeout: 600000,
+    });
+  } catch (e) {
+    const stderr = (e.stderr?.toString() || '').trim();
+    if (e.killed || e.signal === 'SIGTERM') {
+      throw new Error('Конвертация прервана: превышен таймаут (10 мин). Файл слишком большой?');
+    }
+    if (stderr.includes('Invalid data found'))     throw new Error('Файл повреждён или формат не поддерживается ffmpeg');
+    if (stderr.includes('No such file'))           throw new Error(`Файл не найден: ${input}`);
+    if (stderr.includes('does not contain'))        throw new Error('В файле нет аудиодорожки');
+    throw new Error(`Ошибка конвертации: ${stderr || e.message}`);
+  }
+  if (!existsSync(out)) throw new Error('ffmpeg завершился без ошибок, но WAV-файл не создан');
   return out;
 }
 
@@ -90,7 +120,17 @@ async function callDeepgram(filePath, model, language, speakers, apiKey) {
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
-    throw new Error(`Deepgram (${resp.status}): ${err.err_msg || err.message || resp.statusText}`);
+    const msg = err.err_msg || err.message || resp.statusText;
+    if (resp.status === 401 || resp.status === 403) {
+      const e = new Error(`Deepgram: неверный API-ключ или он деактивирован (${resp.status})`);
+      e.isAuthError = true;
+      throw e;
+    }
+    if (resp.status === 402) throw new Error('Deepgram: закончился баланс. Пополните на console.deepgram.com');
+    if (resp.status === 413) throw new Error('Deepgram: файл слишком большой. Попробуйте обрезать аудио');
+    if (resp.status === 429) throw new Error('Deepgram: слишком много запросов. Подождите минуту');
+    if (resp.status >= 500) throw new Error(`Deepgram: сервер недоступен (${resp.status}). Попробуйте позже`);
+    throw new Error(`Deepgram (${resp.status}): ${msg}`);
   }
   return resp.json();
 }
