@@ -14,7 +14,25 @@ import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, f
 
 // ─── Переименование спикеров ────────────────────────────────────────
 
+async function askSpeakerName(speakerId, hint, savedNames) {
+  const msg = `Speaker ${speakerId} → (${hint}...):`;
+  if (savedNames.length === 0) {
+    return input({ message: msg, default: `Speaker ${speakerId}` });
+  }
+  const choices = savedNames.map(n => ({ name: n, value: n }));
+  choices.push({ name: chalk.dim('Ввести вручную...'), value: '__custom__' });
+  choices.push({ name: chalk.dim(`Оставить Speaker ${speakerId}`), value: `Speaker ${speakerId}` });
+  const picked = await select({ message: msg, choices });
+  if (picked === '__custom__') {
+    return input({ message: `Speaker ${speakerId} →:`, default: `Speaker ${speakerId}` });
+  }
+  return picked;
+}
+
 async function askSpeakerNames(previews) {
+  const cfg = loadConfig();
+  const savedNames = cfg.speakerNames || [];
+
   console.log();
   console.log(chalk.cyan('  Найдены спикеры:'));
   for (const { id, lines } of previews) {
@@ -32,10 +50,7 @@ async function askSpeakerNames(previews) {
   const names = {};
   for (const { id, lines } of previews) {
     const hint = lines[0]?.text.slice(0, 60) || '';
-    const name = await input({
-      message: `Speaker ${id} → (${hint}...):`,
-      default: `Speaker ${id}`,
-    });
+    const name = await askSpeakerName(id, hint, savedNames);
     if (name.trim() && name.trim() !== `Speaker ${id}`) {
       names[id] = name.trim();
     }
@@ -307,6 +322,55 @@ async function runMeetMode(apiKey, cfg) {
   }
 }
 
+// ─── Управление списком спикеров ─────────────────────────────────────
+
+async function editSpeakerNames(cfg) {
+  if (!cfg.speakerNames) cfg.speakerNames = [];
+
+  while (true) {
+    console.log();
+    if (cfg.speakerNames.length) {
+      console.log(chalk.cyan('  Текущий список:'));
+      cfg.speakerNames.forEach((n, i) => console.log(`    ${i + 1}. ${n}`));
+    } else {
+      console.log(chalk.dim('  Список пуст.'));
+    }
+    console.log();
+
+    const choices = [
+      { name: '➕  Добавить имя', value: 'add' },
+    ];
+    if (cfg.speakerNames.length) {
+      choices.push({ name: '🗑️   Удалить имя', value: 'remove' });
+    }
+    choices.push({ name: '↩️   Назад', value: 'back' });
+
+    const action = await select({ message: 'Список спикеров', choices });
+    if (action === 'back') break;
+
+    if (action === 'add') {
+      const name = await input({ message: 'Имя спикера:' });
+      if (name.trim()) {
+        if (!cfg.speakerNames.includes(name.trim())) {
+          cfg.speakerNames.push(name.trim());
+          saveConfig(cfg);
+          console.log(chalk.green(`  Добавлено: ${name.trim()}`));
+        } else {
+          console.log(chalk.yellow('  Уже есть в списке.'));
+        }
+      }
+    } else if (action === 'remove') {
+      const toRemove = await select({
+        message: 'Кого удалить?',
+        choices: cfg.speakerNames.map(n => ({ name: n, value: n })),
+      });
+      cfg.speakerNames = cfg.speakerNames.filter(n => n !== toRemove);
+      saveConfig(cfg);
+      console.log(chalk.green(`  Удалено: ${toRemove}`));
+    }
+  }
+}
+
 // ─── Настройки ──────────────────────────────────────────────────────
 
 async function editSettings(cfg) {
@@ -317,6 +381,7 @@ async function editSettings(cfg) {
     choices: [
       { name: '🔑  Изменить API-ключ', value: 'key' },
       { name: hasSaKey() ? '🔄  Заменить SA-ключ (Google Drive)' : '📂  Добавить SA-ключ (Google Drive)', value: 'sa' },
+      { name: `👤  Список спикеров (${(cfg.speakerNames||[]).length})`, value: 'speakers-list' },
       { name: '📂  Сменить папку', value: 'dir' },
       { name: hasShortcut ? '🗑️   Удалить ярлык' : '🖥️   Добавить ярлык', value: 'shortcut' },
       { name: '🔍  Показать текущие', value: 'show' },
@@ -341,6 +406,8 @@ async function editSettings(cfg) {
         console.log(chalk.red(`  Ошибка: ${result.error}`));
       }
     }
+  } else if (action === 'speakers-list') {
+    await editSpeakerNames(cfg);
   } else if (action === 'dir') {
     console.log(chalk.dim('  Открываю диалог...'));
     const p = pickFolder(cfg.lastOutputDir || '');
@@ -391,7 +458,7 @@ async function interactiveMenu() {
 
     const mode = await select({ message: 'Что делаем?', choices });
 
-    if (mode === 'exit') { console.log(chalk.dim('  Пока!')); break; }
+    if (mode === 'exit') { break; }
     if (mode === 'settings') { await editSettings(cfg); continue; }
 
     try {
