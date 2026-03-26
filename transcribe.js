@@ -89,12 +89,12 @@ function convertToWav(input, tmp) {
   const out = join(tmp, 'converted.wav');
   try {
     execSync(`ffmpeg -i "${input}" -vn -acodec pcm_s16le -ar 16000 -ac 1 -y -loglevel error "${out}"`, {
-      stdio: ['pipe', 'pipe', 'pipe'], timeout: 600000,
+      stdio: ['pipe', 'pipe', 'pipe'], timeout: 20*60000,
     });
   } catch (e) {
     const stderr = (e.stderr?.toString() || '').trim();
     if (e.killed || e.signal === 'SIGTERM') {
-      throw new Error('Конвертация прервана: превышен таймаут (10 мин). Файл слишком большой?');
+      throw new Error('Конвертация прервана: превышен таймаут (20 мин). Файл слишком большой?');
     }
     if (stderr.includes('Invalid data found'))     throw new Error('Файл повреждён или формат не поддерживается ffmpeg');
     if (stderr.includes('No such file'))           throw new Error(`Файл не найден: ${input}`);
