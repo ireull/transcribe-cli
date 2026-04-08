@@ -11,6 +11,7 @@ import { pickFile, pickFiles, pickFolder, pickJsonFile } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
 import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate } from './gdrive.js';
+import { runUpgrade } from './upgrade.js';
 
 // ─── Переименование спикеров ────────────────────────────────────────
 
@@ -135,9 +136,6 @@ async function askOptions(cfg) {
     choices: [
       { name: '🇷🇺  Русский', value: 'ru' },
       { name: '🇬🇧  English', value: 'en' },
-      { name: '🇩🇪  Deutsch', value: 'de' },
-      { name: '🇪🇸  Espanol', value: 'es' },
-      { name: '🇫🇷  Francais', value: 'fr' },
       { name: '🌐  Другой', value: 'other' },
     ],
     default: cfg.lang || 'ru',
@@ -384,6 +382,7 @@ async function editSettings(cfg) {
       { name: `👤  Список спикеров (${(cfg.speakerNames||[]).length})`, value: 'speakers-list' },
       { name: '📂  Сменить папку', value: 'dir' },
       { name: hasShortcut ? '🗑️   Удалить ярлык' : '🖥️   Добавить ярлык', value: 'shortcut' },
+      { name: '🔄  Обновить transcribe (git pull + reinstall)', value: 'upgrade' },
       { name: '🔍  Показать текущие', value: 'show' },
       { name: '↩️   Назад', value: 'back' },
     ],
@@ -415,6 +414,8 @@ async function editSettings(cfg) {
   } else if (action === 'shortcut') {
     if (hasShortcut) removeShortcut() ? console.log(chalk.green('  Удален.')) : console.log(chalk.yellow('  Не найден.'));
     else createShortcut();
+  } else if (action === 'upgrade') {
+    await runUpgrade();
   } else if (action === 'show') {
     const key = cfg.apiKey || process.env.DEEPGRAM_API_KEY || '';
     const masked = key.length > 10 ? key.slice(0,6) + '...' + key.slice(-4) : key ? '***' : '';
@@ -450,9 +451,9 @@ async function interactiveMenu() {
     const choices = [
       { name: '📁  Файл → транскрипт', value: 'file' },
       { name: '📁  Несколько файлов (batch)', value: 'batch' },
-      { name: '🔗  Ссылка → транскрипт', value: 'url' },
+      { name: '🔗  Ссылка → транскрипт (Youtube, VK…)', value: 'url' },
       { name: '📹  Google Meet → транскрипт', value: 'meet' },
-      { name: '⚙️   Настройки', value: 'settings' },
+      { name: '⚙️  Настройки', value: 'settings' },
       { name: '👋  Выход', value: 'exit' },
     ];
 
@@ -480,7 +481,7 @@ async function interactiveMenu() {
     }
 
     console.log();
-    if (!(await confirm({ message: 'Еще?', default: true }))) { console.log(chalk.dim('  Пока!')); break; }
+    if (!(await confirm({ message: 'Еще?', default: false }))) { console.log(chalk.dim('  Пока!')); break; }
     console.log();
   }
 }
@@ -494,6 +495,7 @@ export async function cli() {
   if (args.includes('--remove-shortcut')) { showHeader(); removeShortcut() ? console.log(chalk.green('Удален.')) : console.log(chalk.yellow('Не найден.')); return; }
 
   const source = args.find(a => !a.startsWith('-'));
+  if (source === 'upgrade' || args.includes('--upgrade')) { showHeader(); await runUpgrade(); return; }
   if (!source) { await interactiveMenu(); return; }
 
   // Быстрый режим
