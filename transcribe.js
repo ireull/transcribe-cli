@@ -13,12 +13,47 @@ const MIME_MAP = {
   '.flac': 'audio/flac', '.m4a': 'audio/mp4', '.opus': 'audio/opus', '.webm': 'audio/webm',
 };
 
+// Централизованный реестр временных директорий: чтобы при SIGINT/SIGTERM/exit
+// мы могли вычистить ВСЕ активные tmp, а не только ту, которую "видит" конкретная
+// функция. Без этого Ctrl-C во время скачивания из Drive оставлял многогигабайтные
+// недокачанные файлы в /tmp.
+const activeTmpDirs = new Set();
+let signalsInstalled = false;
+
+function cleanAllTmpDirs() {
+  for (const d of activeTmpDirs) {
+    try { rmSync(d, { recursive: true, force: true }); } catch {}
+  }
+  activeTmpDirs.clear();
+}
+
+function installSignalHandlers() {
+  if (signalsInstalled) return;
+  signalsInstalled = true;
+  const onSignal = (code) => () => {
+    const hadTmps = activeTmpDirs.size > 0;
+    cleanAllTmpDirs();
+    if (hadTmps) console.error(chalk.dim('\n  Прервано. Временные файлы удалены.'));
+    process.exit(code);
+  };
+  process.on('SIGINT',  onSignal(130));
+  process.on('SIGTERM', onSignal(143));
+  // Safety net: если finally не отработал (uncaughtException, нестандартный выход)
+  process.on('exit', cleanAllTmpDirs);
+}
+
 export function makeTmp() {
   const d = join(tmpdir(), `transcribe-${randomBytes(4).toString('hex')}`);
   mkdirSync(d, { recursive: true });
+  activeTmpDirs.add(d);
+  installSignalHandlers();
   return d;
 }
-export function cleanTmp(d) { try { rmSync(d, { recursive: true, force: true }); } catch {} }
+
+export function cleanTmp(d) {
+  activeTmpDirs.delete(d);
+  try { rmSync(d, { recursive: true, force: true }); } catch {}
+}
 
 export function isUrl(s) { return /^https?:\/\//.test(s.trim()); }
 
@@ -203,9 +238,8 @@ export function getSpeakerPreviews(data) {
 
 export async function runTranscription(source, { speakers, lang, model = 'nova-3', apiKey, outputDir, onSpeakers }) {
   const tmp = makeTmp();
-  const cleanup = () => { cleanTmp(tmp); process.exit(1); };
-  process.on('SIGINT', cleanup);
-  process.on('SIGTERM', cleanup);
+  // Сигналы SIGINT/SIGTERM обрабатываются глобально в makeTmp — он почистит tmp
+  // через activeTmpDirs, так что локальный handler больше не нужен.
 
   let baseName = 'transcript', title = '';
   const spinner = ora({ text: chalk.cyan('Подготовка...'), spinner: 'dots' }).start();
@@ -281,8 +315,6 @@ export async function runTranscription(source, { speakers, lang, model = 'nova-3
     spinner.fail(chalk.red(e.message));
     return null;
   } finally {
-    process.off('SIGINT', cleanup);
-    process.off('SIGTERM', cleanup);
     cleanTmp(tmp);
   }
 }
