@@ -13,9 +13,6 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "scripts": {
-    "postinstall": "node postinstall.js"
-  },
   "dependencies": {
     "@googleapis/drive": "^8.0.0",
     "@inquirer/prompts": "^7.0.0",
