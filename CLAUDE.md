@@ -117,20 +117,20 @@ install.bat                      # Windows: то же самое
 
 ### Самообновление (`transcribe upgrade`)
 
-Ключевой принцип: **локальный git clone не требуется**. Типичный воркфлоу пользователя — `git clone git@github.com:...` → `install.sh` → `rm -rf clone`. Upgrade должен работать даже когда исходной папки давно нет.
+Ключевой принцип: **локальный git clone не требуется**. Типичный воркфлоу пользователя — `npm install -g git+https://github.com/ireull/transcribe-cli.git` (или через `install.sh` из клона, который он тут же удаляет). Upgrade должен работать без исходной папки.
 
 Механизм:
 
 1. Upgrade читает `repository.url` из своего же `package.json` (лежит рядом с `upgrade.js` в папке глобальной установки, доступен через `import.meta.url`).
-2. `execSync('npm install -g git+ssh://git@github.com/.../transcribe-cli.git')`. npm сам клонирует в temp, ставит зависимости, вызывает postinstall и устанавливает глобально. Temp чистится npm-ом.
-3. После install перечитывает `package.json` с того же пути — файл уже заменён, возвращает новую версию. Показывает пользователю `старая → новая`.
+2. Делает `fetch https://raw.githubusercontent.com/<user>/<repo>/master/package.json` (fallback `main`) — сравнивает `version` с установленной. Если совпадает — ранний выход без запуска `npm` (экономит ~20 секунд). Работает только для public-репо; если репо сделают приватным, fetch вернёт 404, и мы просто провалимся в install.
+3. Если версии разные (или проверка не сработала) — `execSync('npm install -g git+https://github.com/.../transcribe-cli.git')`. npm сам клонирует в temp, ставит зависимости, вызывает postinstall и устанавливает глобально. Temp чистится npm-ом.
+4. После install перечитывает `package.json` с того же пути — файл уже заменён, возвращает новую версию. Показывает пользователю `старая → новая`.
 
-**Репозиторий приватный**, поэтому:
-- В [package.json](package.json) URL формата `git+ssh://git@github.com/...`, а не `git+https://`. npm при установке вызовет git clone по SSH, подхватится пользовательский SSH-ключ.
-- Проверка remote-версии через `raw.githubusercontent.com` не делается — для приватного репо она всё равно вернёт 404. Просто всегда гоняем `npm install -g`; если версия на remote та же, это ~20 секунд "вхолостую", зато работает одинаково для public/private.
-- При ошибке `Permission denied (publickey)` upgrade подсказывает проверить `ssh -T git@github.com`.
+**Репо публичное**, поэтому:
+- В [package.json](package.json) URL формата `git+https://github.com/...`. Никаких SSH-ключей на машине пользователя не нужно — работает из коробки на любой машине с Node и git.
+- Первичная установка — `npm install -g git+https://github.com/ireull/transcribe-cli.git` одной строкой. `install.sh`/`install.bat` остаются как альтернатива для тех, кто уже склонировал репо.
 
-**[package.json](package.json) обязан содержать поле `repository.url`** — иначе upgrade не знает, откуда качать. Также **версия должна бампаться на каждом релизе** (см. раздел "Рабочий процесс"), иначе пользователь после upgrade увидит "версия не изменилась" и не поймёт, применились ли изменения.
+**[package.json](package.json) обязан содержать поле `repository.url`** — иначе upgrade не знает, откуда качать. Также **версия должна бампаться на каждом релизе** (см. раздел "Рабочий процесс"), иначе проверка через raw.githubusercontent.com покажет "уже последняя" и реальное обновление не запустится.
 
 `scripts.postinstall` в [package.json](package.json) остаётся обязательным — без него не копируется `service-account.json` при установке. Маркера `install-source.json` больше нет и не пишется (ранняя итерация использовала его, но это не работало с воркфлоу clone-install-delete).
 

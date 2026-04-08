@@ -57,23 +57,34 @@ brew install yt-dlp
 
 ## Установка
 
-### Windows
+### Одной командой (рекомендуется)
 
-1. Скачайте или клонируйте репозиторий
-2. Откройте папку `transcribe-cli`
-3. Дважды кликните `install.bat` или запустите в терминале:
-
-```bat
-cd transcribe-cli
-install.bat
+```bash
+npm install -g git+https://github.com/ireull/transcribe-cli.git
 ```
 
-### macOS / Linux
+Работает на macOS, Linux и Windows одинаково. npm сам склонирует репозиторий,
+поставит зависимости и сделает команду `transcribe` доступной глобально. Ни
+`git clone`, ни `chmod`, ни запуск `install.sh` не нужны.
 
+Если получите `EACCES` — запустите с `sudo` (macOS/Linux) или из консоли
+с правами администратора (Windows).
+
+### Из клона (альтернатива)
+
+Если уже склонировали репозиторий локально и хотите собирать из исходников:
+
+**macOS / Linux:**
 ```bash
 cd transcribe-cli
 chmod +x install.sh
 ./install.sh
+```
+
+**Windows:**
+```bat
+cd transcribe-cli
+install.bat
 ```
 
 После установки команда `transcribe` доступна из любого терминала.
@@ -189,40 +200,22 @@ transcribe
 
 ## Обновление
 
-### Автоматически (рекомендуется)
-
 ```bash
 transcribe upgrade
 ```
 
-Команда вызывает `npm install -g git+ssh://git@github.com/ireull/transcribe-cli.git`.
-npm сам клонирует свежую версию во временную папку, соберёт и переустановит
-глобально — **никакого локального git clone держать не нужно**. Репозиторий
-приватный, поэтому используется SSH URL: тот же SSH-ключ, которым вы
-клонируете вручную, подхватится автоматически.
+Команда сначала проверит версию на GitHub (через
+`raw.githubusercontent.com`) и, если обновлений нет, выйдет мгновенно.
+Иначе — вызовет `npm install -g git+https://github.com/ireull/transcribe-cli.git`.
+npm сам склонирует свежую версию во временную папку, соберёт и
+переустановит глобально. Локальный git clone держать не нужно.
 
 Также доступно через меню: **Настройки → Обновить transcribe**, или флагом
 `transcribe --upgrade`.
 
 Возможные ошибки:
-- **Permission denied (publickey)** — SSH-ключ GitHub не настроен. Проверьте `ssh -T git@github.com`.
 - **EACCES** — подскажет запустить `sudo npm install -g ...`.
 - **Windows** — закрыть все окна transcribe и повторить (запущенный процесс может блокировать перезапись).
-
-### Вручную
-
-```bash
-git clone git@github.com:ireull/transcribe-cli.git
-cd transcribe-cli
-./install.sh    # macOS/Linux
-install.bat     # Windows
-```
-
-Или одной строкой через npm напрямую:
-
-```bash
-npm install -g git+ssh://git@github.com/ireull/transcribe-cli.git
-```
 
 Установка перезапишет предыдущую версию. Настройки (ключи, папки) сохранятся — они хранятся отдельно в `~/.transcribe/`.
 

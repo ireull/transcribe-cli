@@ -23,6 +23,7 @@ function readPkg() {
  * Парсит repository.url из package.json в:
  *   - install: строка для `npm install -g <...>` (с префиксом git+)
  *   - display: человекочитаемый https://github.com/user/repo для показа пользователю
+ *   - slug:   { user, repo } для fetch к raw.githubusercontent.com
  */
 function parseRepoUrl(repoField) {
   const raw = typeof repoField === 'string' ? repoField : repoField?.url;
@@ -33,22 +34,42 @@ function parseRepoUrl(repoField) {
   // github.com/<user>/<repo> — матчит и /, и : в разделителе (scp-style git@host:user/repo)
   const m = raw.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/);
   const display = m ? `https://github.com/${m[1]}/${m[2]}` : raw;
+  const slug = m ? { user: m[1], repo: m[2] } : null;
 
-  return { install, display };
+  return { install, display, slug };
 }
 
 /**
- * Автоматическое обновление: `npm install -g git+ssh://git@github.com/.../transcribe-cli.git`.
+ * Пытается достать version из package.json на GitHub без клонирования.
+ * Работает только для публичных репозиториев. Пробует master, затем main.
+ * Возвращает null при сетевой ошибке или для приватных репо (404).
+ */
+async function fetchRemoteVersion(slug) {
+  if (!slug) return null;
+  for (const branch of ['master', 'main']) {
+    try {
+      const url = `https://raw.githubusercontent.com/${slug.user}/${slug.repo}/${branch}/package.json`;
+      const r = await fetch(url);
+      if (!r.ok) continue;
+      const remote = await r.json();
+      if (remote.version) return remote.version;
+    } catch {
+      // сетевая ошибка — пробуем следующую ветку
+    }
+  }
+  return null;
+}
+
+/**
+ * Автоматическое обновление: `npm install -g git+https://github.com/.../transcribe-cli.git`.
  *
  * npm сам клонирует в temp, ставит зависимости, вызывает postinstall и устанавливает
- * глобально — никакого локального git clone держать не нужно. Для приватного репозитория
- * используется SSH URL, так что npm подцепит тот же ключ, которым ты клонируешь вручную.
+ * глобально — никакого локального git clone держать не нужно. Репозиторий публичный,
+ * поэтому HTTPS URL — никакие SSH-ключи не требуются.
  *
  * Источник читается из поля `repository` в собственном package.json установленной версии.
- * Проверка remote-версии через raw.githubusercontent.com не делается — для приватного
- * репозитория она всё равно вернёт 404. Просто всегда гоняем `npm install -g`; если
- * установлена уже последняя версия, то это ~20 секунд "вхолостую", зато работает
- * одинаково для public/private.
+ * Перед установкой проверяется remote-версия через raw.githubusercontent.com — если
+ * она совпадает с установленной, ранний выход без запуска npm (экономит ~20 секунд).
  */
 export async function runUpgrade() {
   console.log();
@@ -63,7 +84,7 @@ export async function runUpgrade() {
   const repo = parseRepoUrl(pkg.repository);
   if (!repo) {
     console.log(chalk.red('  В package.json нет поля repository — не знаю, откуда качать.'));
-    console.log(chalk.dim('  Обновитесь вручную: npm install -g git+ssh://git@github.com/<owner>/transcribe-cli.git'));
+    console.log(chalk.dim('  Обновитесь вручную: npm install -g git+https://github.com/<owner>/transcribe-cli.git'));
     return;
   }
 
@@ -72,7 +93,20 @@ export async function runUpgrade() {
   console.log(chalk.cyan(`  Источник:       ${repo.display}`));
   console.log();
 
-  // ─── Установка ────────────────────────────────────────────────────
+  // ─── 1. Проверка версии на GitHub (без клонирования) ──────────────
+  const checkSp = ora({ text: chalk.cyan('Проверяю последнюю версию...'), spinner: 'dots' }).start();
+  const remoteVersion = await fetchRemoteVersion(repo.slug);
+  if (remoteVersion) {
+    if (remoteVersion === oldVersion) {
+      checkSp.succeed(`Уже последняя версия (${oldVersion}).`);
+      return;
+    }
+    checkSp.succeed(`Доступна версия ${remoteVersion} (у вас ${oldVersion}).`);
+  } else {
+    checkSp.warn('Не удалось проверить версию — продолжаю установку.');
+  }
+
+  // ─── 2. Установка ─────────────────────────────────────────────────
   const installSp = ora({
     text: chalk.cyan(`npm install -g ${repo.install}`),
     spinner: 'dots',
@@ -84,10 +118,7 @@ export async function runUpgrade() {
     const msg = (e.stderr?.toString() || e.message || '').trim();
     installSp.fail(`Ошибка установки: ${msg.split('\n')[0] || 'unknown'}`);
 
-    if (/Permission denied \(publickey\)|Host key verification failed/i.test(msg)) {
-      console.log(chalk.dim('  SSH-ключ GitHub не настроен или не принят.'));
-      console.log(chalk.dim('  Проверьте: ssh -T git@github.com'));
-    } else if (/EACCES|permission denied/i.test(msg)) {
+    if (/EACCES|permission denied/i.test(msg)) {
       console.log(chalk.dim('  Нужны права. Запустите вручную:'));
       console.log(chalk.dim(`    sudo npm install -g "${repo.install}"`));
     } else if (platform() === 'win32') {
