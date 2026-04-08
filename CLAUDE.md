@@ -136,6 +136,4 @@ install.bat                      # Windows: то же самое
 
 **[package.json](package.json) обязан содержать поле `repository.url`** — иначе upgrade не знает, откуда качать. Также **версия должна бампаться на каждом релизе** (см. раздел "Рабочий процесс"), иначе проверка через raw.githubusercontent.com покажет "уже последняя" и реальное обновление не запустится.
 
-`scripts.postinstall` в [package.json](package.json) остаётся обязательным — без него не копируется `service-account.json` при установке. Маркера `install-source.json` больше нет и не пишется (ранняя итерация использовала его, но это не работало с воркфлоу clone-install-delete).
-
 На EACCES upgrade подсказывает `sudo npm install -g ...`, на Windows — закрыть transcribe и повторить. Полный stderr npm выводится при ошибке первыми 10 строк.
