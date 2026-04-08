@@ -1,6 +1,6 @@
 {
   "name": "transcribe-cli",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "CLI для транскрипции через Deepgram + yt-dlp + ffmpeg",
   "type": "module",
   "bin": {
@@ -17,9 +17,10 @@
     "postinstall": "node postinstall.js"
   },
   "dependencies": {
+    "@googleapis/drive": "^8.0.0",
     "@inquirer/prompts": "^7.0.0",
     "chalk": "^5.3.0",
-    "googleapis": "^144.0.0",
+    "google-auth-library": "^9.0.0",
     "ora": "^8.0.0"
   }
 }

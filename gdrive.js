@@ -1,4 +1,5 @@
-import { google } from 'googleapis';
+import { drive as driveApi } from '@googleapis/drive';
+import { GoogleAuth } from 'google-auth-library';
 import { createWriteStream, existsSync, readFileSync, copyFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -55,12 +56,12 @@ function getDriveClient() {
   }
 
   const key = JSON.parse(readFileSync(SA_KEY_PATH, 'utf-8'));
-  const auth = new google.auth.GoogleAuth({
+  const auth = new GoogleAuth({
     credentials: key,
     scopes: ['https://www.googleapis.com/auth/drive.readonly'],
   });
 
-  return google.drive({ version: 'v3', auth });
+  return driveApi({ version: 'v3', auth });
 }
 
 /**
