@@ -2,7 +2,18 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const CONFIG_DIR = join(homedir(), '.transcribe');
+/**
+ * XDG-совместимый путь к конфигу: $XDG_CONFIG_HOME/transcribe-cli или
+ * ~/.config/transcribe-cli. Держим всё вне пакета, чтобы переживало
+ * переустановку и `npm uninstall -g`.
+ */
+function computeConfigDir() {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  if (xdg) return join(xdg, 'transcribe-cli');
+  return join(homedir(), '.config', 'transcribe-cli');
+}
+
+export const CONFIG_DIR = computeConfigDir();
 export const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 const DEFAULTS = {

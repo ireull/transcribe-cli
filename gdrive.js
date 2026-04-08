@@ -2,13 +2,13 @@ import { drive as driveApi } from '@googleapis/drive';
 import { GoogleAuth } from 'google-auth-library';
 import { createWriteStream, existsSync, readFileSync, copyFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
 import { sanitizeFilename } from './transcribe.js';
+import { CONFIG_DIR } from './config.js';
 
-// SA-ключ в ~/.transcribe/ — не зависит от npm, переживает обновления
-const CONFIG_DIR = join(homedir(), '.transcribe');
+// SA-ключ лежит рядом с config.json в XDG-папке — не зависит от npm,
+// переживает переустановку.
 const SA_KEY_PATH = join(CONFIG_DIR, 'service-account.json');
 
 /**

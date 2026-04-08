@@ -45,7 +45,7 @@ install.bat                      # Windows: то же самое
 - [app.js](app.js) — UI, меню, режимы (`runFileMode`, `runBatchMode`, `runUrlMode`, `runMeetMode`), настройки. Весь `@inquirer/prompts` живёт здесь.
 - [transcribe.js](transcribe.js) — **ядро пайплайна**. `runTranscription(source, opts)` — единственная публичная функция, которая знает как скачать/сконвертировать/отправить в Deepgram/записать MD. Остальные модули не должны знать про Deepgram.
 - [gdrive.js](gdrive.js) — Google Drive API и Service Account. Тоже автономен: умеет искать Meet Recordings, скачивать файл, импортировать SA-ключ.
-- [config.js](config.js) — единственный writer `~/.transcribe/config.json`. Любое изменение настроек идёт через `loadConfig`/`saveConfig`.
+- [config.js](config.js) — единственный writer `~/.config/transcribe-cli/config.json` (или `$XDG_CONFIG_HOME/transcribe-cli/` если задан). Любое изменение настроек идёт через `loadConfig`/`saveConfig`. Экспортирует `CONFIG_DIR` — все остальные модули, которым нужен путь к пользовательским данным, импортируют его отсюда, а не считают свой.
 - [dialogs.js](dialogs.js) — нативные file picker'ы через `osascript` (macOS) и `powershell` (Windows). Linux не поддерживается — возвращает `null`.
 - [shortcut.js](shortcut.js) — создание ярлыка на рабочем столе (`.command`/`.lnk`+`.bat`/`.desktop`).
 - [upgrade.js](upgrade.js) — `transcribe upgrade`: `npm install -g git+<url>`, см. раздел "Самообновление".
@@ -72,11 +72,15 @@ install.bat                      # Windows: то же самое
 
 ### Конфигурация и secrets
 
-Два отдельных файла в `~/.transcribe/`:
+Два отдельных файла в XDG-папке (`$XDG_CONFIG_HOME/transcribe-cli/` или `~/.config/transcribe-cli/` по умолчанию):
 - `config.json` — API-ключ Deepgram, язык, папки, имена спикеров, флаг `shortcutOffered`
 - `service-account.json` — SA-ключ Google (не смешиваем с config)
 
-`CONFIG_DIR = ~/.transcribe` намеренно не внутри `node_modules` — переживает `npm update -g` и переустановку. `postinstall.js` ничего туда не пишет.
+`CONFIG_DIR` вычисляется в [config.js](config.js) и экспортируется — [gdrive.js](gdrive.js) импортирует его оттуда, а не дублирует логику вычисления. Это **единственное место** где определяется путь к пользовательским данным.
+
+Директория намеренно не внутри `node_modules` — переживает `npm update -g` и переустановку. `postinstall.js` туда ничего не пишет.
+
+**Миграции со старого `~/.transcribe/` нет** — при переходе на версию с XDG-путями пользователь руками переносит (или пересоздаёт) config. Решение осознанное: автомиграция добавляет код ради одноразового события.
 
 `ensureApiKey` также читает `DEEPGRAM_API_KEY` из env как fallback, но сохранённый в config ключ имеет приоритет.
 
