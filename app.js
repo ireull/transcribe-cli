@@ -453,7 +453,7 @@ async function interactiveMenu() {
       { name: '📁  Несколько файлов (batch)', value: 'batch' },
       { name: '🔗  Ссылка → транскрипт (Youtube, VK…)', value: 'url' },
       { name: '📹  Google Meet → транскрипт', value: 'meet' },
-      { name: '⚙️  Настройки', value: 'settings' },
+      { name: '⚙️   Настройки', value: 'settings' },
       { name: '👋  Выход', value: 'exit' },
     ];
 
