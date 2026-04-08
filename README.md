@@ -63,9 +63,7 @@ brew install yt-dlp
 npm install -g git+https://github.com/ireull/transcribe-cli.git
 ```
 
-Работает на macOS, Linux и Windows одинаково. npm сам склонирует репозиторий,
-поставит зависимости и сделает команду `transcribe` доступной глобально. Ни
-`git clone`, ни `chmod`, ни запуск `install.sh` не нужны.
+Работает на macOS, Linux и Windows одинаково.
 
 Если получите `EACCES` — запустите с `sudo` (macOS/Linux) или из консоли
 с правами администратора (Windows).
