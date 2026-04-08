@@ -48,8 +48,8 @@ install.bat                      # Windows: то же самое
 - [config.js](config.js) — единственный writer `~/.transcribe/config.json`. Любое изменение настроек идёт через `loadConfig`/`saveConfig`.
 - [dialogs.js](dialogs.js) — нативные file picker'ы через `osascript` (macOS) и `powershell` (Windows). Linux не поддерживается — возвращает `null`.
 - [shortcut.js](shortcut.js) — создание ярлыка на рабочем столе (`.command`/`.lnk`+`.bat`/`.desktop`).
-- [upgrade.js](upgrade.js) — `transcribe upgrade`: git pull + переустановка, см. раздел "Самообновление".
-- [postinstall.js](postinstall.js) — запускается через `scripts.postinstall` в [package.json](package.json). Делает две вещи при `npm i -g`: (1) копирует `service-account.json` из `INIT_CWD` в папку установки пакета, если он там лежит; (2) пишет маркер `~/.transcribe/install-source.json` с путём к исходникам — им пользуется `upgrade.js`.
+- [upgrade.js](upgrade.js) — `transcribe upgrade`: `npm install -g git+<url>`, см. раздел "Самообновление".
+- [postinstall.js](postinstall.js) — запускается через `scripts.postinstall` в [package.json](package.json). При `npm i -g` копирует `service-account.json` из `INIT_CWD` в папку установки пакета, если он там лежит.
 
 ### Пайплайн транскрипции ([transcribe.js:204](transcribe.js#L204))
 
@@ -117,10 +117,21 @@ install.bat                      # Windows: то же самое
 
 ### Самообновление (`transcribe upgrade`)
 
-Команда повторяет то, что делает `install.sh`, но без участия пользователя. Последовательность: `git fetch` → сравнение `HEAD` с `@{u}` (ранний выход если up-to-date) → `git pull --ff-only` → `npm install --production` → `npm pack` → `npm install -g <tgz>` → удаление `.tgz`. Всё через `execSync` в cwd=`sourceDir`.
+Ключевой принцип: **локальный git clone не требуется**. Типичный воркфлоу пользователя — `git clone git@github.com:...` → `install.sh` → `rm -rf clone`. Upgrade должен работать даже когда исходной папки давно нет.
 
-Откуда берётся `sourceDir`: маркер `~/.transcribe/install-source.json` пишется в `postinstall.js` при самой первой установке. `INIT_CWD` там — это папка, из которой был запущен `install.sh`, т.е. корень git clone. Маркер пишется только если `INIT_CWD/package.json` имеет `"name": "transcribe-cli"` — иначе при установке из чужого tgz мы бы записали мусор.
+Механизм:
 
-Важно: `scripts.postinstall` в [package.json](package.json) **обязателен** — без него npm не вызовет `postinstall.js`, и маркер не запишется. Этот хук также отвечает за автокопирование `service-account.json` в папку установки.
+1. Upgrade читает `repository.url` из своего же `package.json` (лежит рядом с `upgrade.js` в папке глобальной установки, доступен через `import.meta.url`).
+2. `execSync('npm install -g git+ssh://git@github.com/.../transcribe-cli.git')`. npm сам клонирует в temp, ставит зависимости, вызывает postinstall и устанавливает глобально. Temp чистится npm-ом.
+3. После install перечитывает `package.json` с того же пути — файл уже заменён, возвращает новую версию. Показывает пользователю `старая → новая`.
 
-Upgrade проверяет `.git` в sourceDir и отказывается работать на ZIP-распаковке. На Windows при EBUSY (запущенный transcribe блокирует перезапись) подсказывает закрыть процесс и запустить `install.bat` руками. На EACCES подсказывает `sudo ./install.sh`.
+**Репозиторий приватный**, поэтому:
+- В [package.json](package.json) URL формата `git+ssh://git@github.com/...`, а не `git+https://`. npm при установке вызовет git clone по SSH, подхватится пользовательский SSH-ключ.
+- Проверка remote-версии через `raw.githubusercontent.com` не делается — для приватного репо она всё равно вернёт 404. Просто всегда гоняем `npm install -g`; если версия на remote та же, это ~20 секунд "вхолостую", зато работает одинаково для public/private.
+- При ошибке `Permission denied (publickey)` upgrade подсказывает проверить `ssh -T git@github.com`.
+
+**[package.json](package.json) обязан содержать поле `repository.url`** — иначе upgrade не знает, откуда качать. Также **версия должна бампаться на каждом релизе** (см. раздел "Рабочий процесс"), иначе пользователь после upgrade увидит "версия не изменилась" и не поймёт, применились ли изменения.
+
+`scripts.postinstall` в [package.json](package.json) остаётся обязательным — без него не копируется `service-account.json` при установке. Маркера `install-source.json` больше нет и не пишется (ранняя итерация использовала его, но это не работало с воркфлоу clone-install-delete).
+
+На EACCES upgrade подсказывает `sudo npm install -g ...`, на Windows — закрыть transcribe и повторить. Полный stderr npm выводится при ошибке первыми 10 строк.

@@ -195,32 +195,33 @@ transcribe
 transcribe upgrade
 ```
 
-Команда сама сходит в папку с исходниками, сделает `git pull`, пересоберёт
-пакет и переустановит. Также доступно через меню: **Настройки → Обновить
-transcribe**, или флагом `transcribe --upgrade`.
+Команда вызывает `npm install -g git+ssh://git@github.com/ireull/transcribe-cli.git`.
+npm сам клонирует свежую версию во временную папку, соберёт и переустановит
+глобально — **никакого локального git clone держать не нужно**. Репозиторий
+приватный, поэтому используется SSH URL: тот же SSH-ключ, которым вы
+клонируете вручную, подхватится автоматически.
 
-Работает при двух условиях:
-1. Первый раз установка была через `./install.sh` (из которого `postinstall`
-   запоминает путь к исходникам в `~/.transcribe/install-source.json`).
-2. Папка с исходниками — git clone, а не ZIP.
+Также доступно через меню: **Настройки → Обновить transcribe**, или флагом
+`transcribe --upgrade`.
 
-Если автообновление не сработает, команда подскажет, что запустить руками.
+Возможные ошибки:
+- **Permission denied (publickey)** — SSH-ключ GitHub не настроен. Проверьте `ssh -T git@github.com`.
+- **EACCES** — подскажет запустить `sudo npm install -g ...`.
+- **Windows** — закрыть все окна transcribe и повторить (запущенный процесс может блокировать перезапись).
 
 ### Вручную
 
-### Windows
-
-```bat
+```bash
+git clone git@github.com:ireull/transcribe-cli.git
 cd transcribe-cli
-install.bat
+./install.sh    # macOS/Linux
+install.bat     # Windows
 ```
 
-### macOS / Linux
+Или одной строкой через npm напрямую:
 
 ```bash
-cd transcribe-cli
-git pull        # если клонировали через git
-./install.sh
+npm install -g git+ssh://git@github.com/ireull/transcribe-cli.git
 ```
 
 Установка перезапишет предыдущую версию. Настройки (ключи, папки) сохранятся — они хранятся отдельно в `~/.transcribe/`.
