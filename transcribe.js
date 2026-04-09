@@ -313,7 +313,6 @@ export async function runTranscription(source, { speakers, lang, model = 'nova-3
     return outPath;
   } catch (e) {
     spinner.fail(chalk.red(e.message));
-    if (e.isAuthError) throw e;
     return null;
   } finally {
     cleanTmp(tmp);

@@ -206,7 +206,7 @@ async function runBatchMode(apiKey, lang, speakers, cfg) {
   for (let i = 0; i < files.length; i++) {
     console.log(chalk.cyan(`── [${i+1}/${files.length}] ${basename(files[i])} ──`));
     try { await runTranscription(files[i], { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined }); }
-    catch (e) { if (e.isAuthError) throw e; console.log(chalk.red(`  Ошибка: ${e.message}`)); }
+    catch (e) { console.log(chalk.red(`  Ошибка: ${e.message}`)); }
   }
 }
 
@@ -314,7 +314,6 @@ async function runMeetMode(apiKey, cfg) {
     console.log();
     await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
   } catch (e) {
-    if (e.isAuthError) throw e;
     console.log(chalk.red(`  Ошибка: ${e.message}`));
   } finally {
     cleanTmp(tmpDir);
