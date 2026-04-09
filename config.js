@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -15,6 +15,23 @@ function computeConfigDir() {
 
 export const CONFIG_DIR = computeConfigDir();
 export const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
+
+// Миграция со старого ~/.transcribe/ на XDG-путь
+const OLD_DIR = join(homedir(), '.transcribe');
+if (existsSync(OLD_DIR)) {
+  try {
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    const oldCfg = join(OLD_DIR, 'config.json');
+    if (existsSync(oldCfg) && !existsSync(CONFIG_PATH)) {
+      copyFileSync(oldCfg, CONFIG_PATH);
+    }
+    const oldSa = join(OLD_DIR, 'service-account.json');
+    const newSa = join(CONFIG_DIR, 'service-account.json');
+    if (existsSync(oldSa) && !existsSync(newSa)) {
+      copyFileSync(oldSa, newSa);
+    }
+  } catch {}
+}
 
 const DEFAULTS = {
   lang: 'ru',

@@ -1,6 +1,6 @@
 {
   "name": "transcribe-cli",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "description": "CLI для транскрипции через Deepgram + yt-dlp + ffmpeg",
   "type": "module",
   "bin": {
