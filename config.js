@@ -36,6 +36,16 @@ export function loadConfig() {
 }
 
 export function saveConfig(cfg) {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+  try {
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+  } catch (e) {
+    if (e.code === 'EACCES') {
+      throw new Error(
+        `Нет прав на запись в ${CONFIG_DIR}\n` +
+        `  Исправьте: sudo chown -R $(whoami) "${CONFIG_DIR}"`
+      );
+    }
+    throw e;
+  }
 }
