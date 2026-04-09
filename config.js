@@ -36,8 +36,6 @@ export function loadConfig() {
 }
 
 export function saveConfig(cfg) {
-  try {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
-  } catch {}
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
 }
