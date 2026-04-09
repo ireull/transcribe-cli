@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 
 /**
  * XDG-совместимый путь к конфигу: $XDG_CONFIG_HOME/transcribe-cli или
@@ -41,9 +41,12 @@ export function saveConfig(cfg) {
     writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
   } catch (e) {
     if (e.code === 'EACCES') {
+      const dir = e.path ? dirname(e.path) : CONFIG_DIR;
+      const cmd = `sudo chown $(whoami) "${dir}"`;
       throw new Error(
-        `Нет прав на запись в ${CONFIG_DIR}\n` +
-        `  Исправьте: sudo chown -R $(whoami) "${CONFIG_DIR}"`
+        `Нет прав на запись в ${dir}\n\n` +
+        `  Выполните в терминале:\n\n` +
+        `  >>> ${cmd}\n`
       );
     }
     throw e;
