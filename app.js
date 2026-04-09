@@ -377,12 +377,12 @@ async function editSettings(cfg) {
   const action = await select({
     message: 'Настройки',
     choices: [
-      { name: '🔑  Изменить API-ключ', value: 'key' },
-      { name: hasSaKey() ? '🔄  Заменить SA-ключ (Google Drive)' : '📂  Добавить SA-ключ (Google Drive)', value: 'sa' },
+      { name: '🔑  Изменить API-ключ Deepgram', value: 'key' },
+      { name: hasSaKey() ? '🔄  Заменить SA-ключ Google Drive' : '📂  Добавить SA-ключ Google Drive', value: 'sa' },
       { name: `👤  Список спикеров (${(cfg.speakerNames||[]).length})`, value: 'speakers-list' },
       { name: '📂  Сменить папку', value: 'dir' },
       { name: hasShortcut ? '🗑️   Удалить ярлык' : '🖥️   Добавить ярлык', value: 'shortcut' },
-      { name: '🔄  Обновить transcribe (git pull + reinstall)', value: 'upgrade' },
+      { name: '🔄  Обновить transcribe до последней версии', value: 'upgrade' },
       { name: '🔍  Показать текущие', value: 'show' },
       { name: '↩️   Назад', value: 'back' },
     ],
@@ -422,12 +422,12 @@ async function editSettings(cfg) {
     const has = n => { try { execSync(`${process.platform==='win32'?'where':'which'} ${n}`,{stdio:'pipe'}); return true; } catch { return false; } };
     console.log();
     console.log(chalk.cyan('  ┌─ Окружение ─────────────────────'));
-    console.log(chalk.cyan('  │') + ` API-ключ:  ${key ? chalk.green('✓')+' '+masked : chalk.red('✗ не задан')}`);
+    console.log(chalk.cyan('  │') + ` API-ключ Deepgram:  ${key ? chalk.green('✓')+' '+masked : chalk.red('✗ не задан')}`);
     console.log(chalk.cyan('  │') + ` Язык:      ${cfg.lang||'ru'}`);
     console.log(chalk.cyan('  │') + ` Спикеры:   ${cfg.speakers?'да':'нет'}`);
     console.log(chalk.cyan('  │') + ` Папка:     ${cfg.lastOutputDir||chalk.dim('рядом с файлом')}`);
     console.log(chalk.cyan('  │') + ` Ярлык:     ${shortcutExists()?chalk.green('✓ есть'):chalk.dim('нет')}`);
-    console.log(chalk.cyan('  │') + ` SA-ключ:   ${hasSaKey()?chalk.green('✓')+' '+getSaKeyPath():chalk.dim('нет')}`);
+    console.log(chalk.cyan('  │') + ` SA-ключ Google Drive:   ${hasSaKey()?chalk.green('✓')+' '+getSaKeyPath():chalk.dim('нет')}`);
     console.log(chalk.cyan('  │') + ` ffmpeg:    ${has('ffmpeg')?chalk.green('✓'):chalk.red('✗')}`);
     console.log(chalk.cyan('  │') + ` yt-dlp:    ${has('yt-dlp')?chalk.green('✓'):chalk.red('✗')}`);
     console.log(chalk.cyan('  │') + ` Конфиг:    ${CONFIG_PATH}`);
@@ -451,7 +451,7 @@ async function interactiveMenu() {
     const choices = [
       { name: '📁  Файл → транскрипт', value: 'file' },
       { name: '📁  Несколько файлов (batch)', value: 'batch' },
-      { name: '🔗  Ссылка → транскрипт (Youtube, VK…)', value: 'url' },
+      { name: '🔗  Ссылка → транскрипт (Youtube, Vimeo…)', value: 'url' },
       { name: '📹  Google Meet → транскрипт', value: 'meet' },
       { name: '⚙️   Настройки', value: 'settings' },
       { name: '👋  Выход', value: 'exit' },
