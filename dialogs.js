@@ -1,29 +1,41 @@
 import { execSync } from 'child_process';
+import { existsSync, statSync } from 'fs';
 import { platform } from 'os';
 
 const IS_MAC = platform() === 'darwin';
 const IS_WIN = platform() === 'win32';
 
+// osascript падает с -1700, если default location указывает на несуществующую папку;
+// PowerShell тихо игнорирует, но приводим к одному поведению для предсказуемости.
+function validDir(d) {
+  if (!d) return '';
+  try { return existsSync(d) && statSync(d).isDirectory() ? d : ''; }
+  catch { return ''; }
+}
+
 export function pickFile(initialDir = '') {
+  const dir = validDir(initialDir);
   try {
-    if (IS_MAC) return pickFileMac(initialDir);
-    if (IS_WIN) return pickFileWin(initialDir);
+    if (IS_MAC) return pickFileMac(dir);
+    if (IS_WIN) return pickFileWin(dir);
     return null;
   } catch { return null; }
 }
 
 export function pickFiles(initialDir = '') {
+  const dir = validDir(initialDir);
   try {
-    if (IS_MAC) return pickFilesMac(initialDir);
-    if (IS_WIN) return pickFilesWin(initialDir);
+    if (IS_MAC) return pickFilesMac(dir);
+    if (IS_WIN) return pickFilesWin(dir);
     return [];
   } catch { return []; }
 }
 
 export function pickFolder(initialDir = '') {
+  const dir = validDir(initialDir);
   try {
-    if (IS_MAC) return pickFolderMac(initialDir);
-    if (IS_WIN) return pickFolderWin(initialDir);
+    if (IS_MAC) return pickFolderMac(dir);
+    if (IS_WIN) return pickFolderWin(dir);
     return null;
   } catch { return null; }
 }
@@ -109,14 +121,15 @@ function pickFolderWin(dir) {
  * Открывает диалог выбора JSON-файла (для SA-ключа).
  */
 export function pickJsonFile(initialDir = '') {
+  const dir = validDir(initialDir);
   try {
     if (IS_MAC) {
-      const clause = initialDir ? `default location POSIX file "${initialDir}"` : '';
+      const clause = dir ? `default location POSIX file "${dir}"` : '';
       const script = `set f to choose file ${clause} with prompt "Выберите service-account.json" of type {"public.json"}\nreturn POSIX path of f`;
       return execSync(`osascript -e '${script}'`, { encoding: 'utf-8', timeout: 120000 }).trim() || null;
     }
     if (IS_WIN) {
-      const initDir = initialDir ? initialDir.replace(/\//g, '\\') : '';
+      const initDir = dir ? dir.replace(/\//g, '\\') : '';
       const ps = [
         'Add-Type -AssemblyName System.Windows.Forms',
         '$d = New-Object System.Windows.Forms.OpenFileDialog',
