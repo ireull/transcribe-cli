@@ -92,7 +92,9 @@ function downloadAudio(url, tmp) {
   if (!checkBin('yt-dlp', 'pip install yt-dlp')) process.exit(1);
   const out = join(tmp, 'audio.%(ext)s');
   try {
-    execSync(`yt-dlp -x --audio-format wav --audio-quality 0 -o "${out}" --no-playlist --concurrent-fragments 4 --quiet "${url}"`, {
+    // opus вместо wav: файл в ~10× меньше, Deepgram его жуёт напрямую (он в DIRECT_AUDIO),
+    // и fetch не падает по таймауту на длинных роликах.
+    execSync(`yt-dlp -x --audio-format opus --audio-quality 0 -o "${out}" --no-playlist --concurrent-fragments 4 --quiet "${url}"`, {
       stdio: ['pipe', 'pipe', 'pipe'], timeout: 3600000,
       env: SUBPROCESS_ENV,
     });
@@ -148,11 +150,22 @@ async function callDeepgram(filePath, model, language, speakers, apiKey) {
   });
   if (speakers) params.set('diarize', 'true');
 
-  const resp = await fetch(`${DEEPGRAM_API}?${params}`, {
-    method: 'POST',
-    headers: { Authorization: `Token ${apiKey}`, 'Content-Type': MIME_MAP[ext] || 'application/octet-stream' },
-    body,
-  });
+  let resp;
+  try {
+    resp = await fetch(`${DEEPGRAM_API}?${params}`, {
+      method: 'POST',
+      headers: { Authorization: `Token ${apiKey}`, 'Content-Type': MIME_MAP[ext] || 'application/octet-stream' },
+      body,
+    });
+  } catch (e) {
+    // Node fetch (undici) бросает голое "fetch failed" — реальная причина в e.cause.
+    // Без этого пользователь видит загадочный текст без шансов на диагностику.
+    const cause = e.cause || {};
+    const detail = cause.code || cause.message || '';
+    const sizeMb = (body.length / 1048576).toFixed(1);
+    if (detail) throw new Error(`Сеть упала при отправке в Deepgram (${sizeMb} MB): ${detail}`);
+    throw new Error(`Сеть упала при отправке в Deepgram (${sizeMb} MB): ${e.message}`);
+  }
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     const msg = err.err_msg || err.message || resp.statusText;
