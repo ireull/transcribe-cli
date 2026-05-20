@@ -1,4 +1,4 @@
-import { select, confirm, input } from '@inquirer/prompts';
+import { select, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
 import { existsSync, statSync } from 'fs';
@@ -45,7 +45,7 @@ async function askSpeakerNames(previews) {
   }
   console.log();
 
-  const wantRename = await confirm({ message: 'Переименовать спикеров?', default: true });
+  const wantRename = await yesNo('Переименовать спикеров?', true);
   if (!wantRename) return {};
 
   const names = {};
@@ -100,6 +100,19 @@ function shorten(p, max = 50) {
   return parts.length <= 3 ? p : parts[0] + '/.../' + parts.slice(-2).join('/');
 }
 
+// Y/N через select со стрелками. @inquirer/confirm требует набора y/n,
+// что неудобно на трекпаде и при беглом прохождении меню.
+async function yesNo(message, defaultYes = true) {
+  return select({
+    message,
+    choices: [
+      { name: 'Да', value: true },
+      { name: 'Нет', value: false },
+    ],
+    default: defaultYes,
+  });
+}
+
 // ─── Первый запуск ──────────────────────────────────────────────────
 
 async function firstRunSetup(cfg) {
@@ -107,7 +120,7 @@ async function firstRunSetup(cfg) {
   cfg.shortcutOffered = true;
   saveConfig(cfg);
   console.log();
-  const want = await confirm({ message: 'Добавить ярлык на рабочий стол?', default: true });
+  const want = await yesNo('Добавить ярлык на рабочий стол?', true);
   if (want) createShortcut();
   else console.log(chalk.dim('  Ок. Позже: настройки → ярлык, или transcribe --install-shortcut'));
   console.log();
@@ -142,7 +155,7 @@ async function askOptions(cfg) {
   });
   if (lang === 'other') lang = await input({ message: 'Код языка (BCP-47):', default: 'ru' });
 
-  const speakers = await confirm({ message: 'Разделять спикеров?', default: cfg.speakers ?? true });
+  const speakers = await yesNo('Разделять спикеров?', cfg.speakers ?? true);
   cfg.lang = lang; cfg.speakers = speakers; saveConfig(cfg);
   return { lang, speakers };
 }
@@ -481,7 +494,7 @@ async function interactiveMenu() {
     }
 
     console.log();
-    if (!(await confirm({ message: 'Еще?', default: false }))) { console.log(chalk.dim('  Пока!')); break; }
+    if (!(await yesNo('Еще?', false))) { console.log(chalk.dim('  Пока!')); break; }
     console.log();
   }
 }
