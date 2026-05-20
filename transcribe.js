@@ -120,25 +120,36 @@ function downloadAudio(url, tmp) {
   return join(tmp, f);
 }
 
-function convertToWav(input, tmp) {
+function convertToOpus(input, tmp) {
   const hint = platform() === 'darwin' ? 'brew install ffmpeg' : 'choco install ffmpeg';
   if (!checkBin('ffmpeg', hint)) process.exit(1);
-  const out = join(tmp, 'converted.wav');
+  const out = join(tmp, 'converted.opus');
   try {
-    execSync(`ffmpeg -i "${input}" -vn -acodec pcm_s16le -ar 16000 -ac 1 -y -loglevel error "${out}"`, {
-      stdio: ['pipe', 'pipe', 'pipe'], timeout: 20*60000,
-    });
+    // libopus 32 kbps mono 16 kHz в режиме voip: для речи Deepgram распознаёт
+    // один в один с WAV PCM, файл ~в 8× меньше (115 MB/час → 14 MB/час), аплоад
+    // секунды вместо минут — fetch timeout на длинных Meet'ах физически исключён.
+    execSync(
+      `ffmpeg -i "${input}" -vn -c:a libopus -b:a 32k -ar 16000 -ac 1 ` +
+      `-application voip -y -loglevel error "${out}"`,
+      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 20*60000 }
+    );
   } catch (e) {
     const stderr = (e.stderr?.toString() || '').trim();
     if (e.killed || e.signal === 'SIGTERM') {
       throw new Error('Конвертация прервана: превышен таймаут (20 мин). Файл слишком большой?');
+    }
+    if (stderr.includes('Unknown encoder') && stderr.includes('libopus')) {
+      throw new Error(
+        'ffmpeg собран без libopus. Переустановите:\n' +
+        `  ${platform() === 'darwin' ? 'brew reinstall ffmpeg' : 'choco upgrade ffmpeg'}`
+      );
     }
     if (stderr.includes('Invalid data found'))     throw new Error('Файл повреждён или формат не поддерживается ffmpeg');
     if (stderr.includes('No such file'))           throw new Error(`Файл не найден: ${input}`);
     if (stderr.includes('does not contain'))        throw new Error('В файле нет аудиодорожки');
     throw new Error(`Ошибка конвертации: ${stderr || e.message}`);
   }
-  if (!existsSync(out)) throw new Error('ffmpeg завершился без ошибок, но WAV-файл не создан');
+  if (!existsSync(out)) throw new Error('ffmpeg завершился без ошибок, но opus-файл не создан');
   return out;
 }
 
@@ -277,9 +288,9 @@ export async function runTranscription(source, { speakers, lang, model = 'nova-3
     }
 
     if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
-      spinner.text = chalk.cyan('Конвертирую аудио...');
-      audioPath = convertToWav(audioPath, tmp);
-      spinner.succeed('Сконвертировано');
+      spinner.text = chalk.cyan('Конвертирую аудио в opus...');
+      audioPath = convertToOpus(audioPath, tmp);
+      spinner.succeed('Сконвертировано в opus');
       spinner.start();
     }
 

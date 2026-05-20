@@ -58,8 +58,8 @@ install.bat                      # Windows: то же самое
 Всё, что происходит после выбора источника, проходит через `runTranscription`:
 
 1. `makeTmp()` — создаёт `os.tmpdir()/transcribe-<random>/` и регистрирует его в глобальном реестре `activeTmpDirs` (см. ниже). В `finally` — `cleanTmp`, который и удаляет директорию, и снимает её с реестра.
-2. URL → `yt-dlp -x --audio-format wav` в tmp. Файл → читается как есть.
-3. Если расширение не в `DIRECT_AUDIO` (whitelist: `.wav .mp3 .ogg .flac .m4a .opus .webm`) — `ffmpeg` конвертирует в `pcm_s16le 16kHz mono`. Это формат, который Deepgram жуёт без вопросов и даёт минимальный размер.
+2. URL → `yt-dlp -x --audio-format opus` в tmp. Файл → читается как есть.
+3. Если расширение не в `DIRECT_AUDIO` (whitelist: `.wav .mp3 .ogg .flac .m4a .opus .webm`) — `ffmpeg` конвертирует в **opus 32 kbps mono 16 kHz** (режим `-application voip`). На качество распознавания речи Deepgram'ом это не влияет, но файл ~в 8× компактнее WAV PCM (115 MB/час → 14 MB/час) — снимает таймауты аплоада на длинных Meet-записях.
 4. Весь файл загружается в память (`readFileSync`) и одним POST уходит в Deepgram. Стрима нет — предел по размеру = RAM процесса.
 5. Результат форматируется в Markdown. Два режима вывода:
    - `speakers=true` → блоки `**Name** [ts]` по `results.utterances`
@@ -90,7 +90,7 @@ install.bat                      # Windows: то же самое
 
 [callDeepgram](transcribe.js#L108) маппит HTTP-коды на человеческие сообщения. Особый случай — 401/403: выбрасывается `Error` с флагом `e.isAuthError = true`, который ловится в главном цикле меню ([app.js:474](app.js#L474)) и запускает `handleDeepgramAuthError` для ввода нового ключа без выхода из программы. **Не убирать этот флаг** — это единственный способ отличить "ключ протух" от других ошибок без парсинга текста.
 
-Ошибки `yt-dlp`/`ffmpeg` маппятся парсингом stderr в [downloadAudio](transcribe.js#L56)/[convertToWav](transcribe.js#L86) — это хрупко, но альтернативы нет.
+Ошибки `yt-dlp`/`ffmpeg` маппятся парсингом stderr в [downloadAudio](transcribe.js#L91)/[convertToOpus](transcribe.js#L123) — это хрупко, но альтернативы нет.
 
 ### Кросс-платформенные хаки
 
