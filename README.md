@@ -1,4 +1,4 @@
-¹# transcribe-cli
+# transcribe-cli
 
 CLI для транскрипции аудио/видео файлов и YouTube-ссылок через Deepgram.
 Поддерживает разделение по спикерам, таймстампы, Google Meet записи.
