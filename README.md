@@ -185,7 +185,7 @@ transcribe
 5. Кликните на созданный SA → вкладка **Keys** → **Add Key** → **Create new key** → **JSON**
 6. Скачается файл `имя-проекта-xxxxxxxx.json` — сохраните его
 7. Скопируйте email SA вида `transcribe-bot@имя-проекта.iam.gserviceaccount.com`
-8. Откройте **Google Drive** → папку **Meet Recordings** → ПКМ → **Share** → вставьте email SA → **Viewer** → **Send**
+8. Откройте **Google Drive** → папку **Meet Recordings** → ПКМ → **Share** → вставьте email SA → **Editor** → **Send**
 
 ### Подключение в CLI
 
