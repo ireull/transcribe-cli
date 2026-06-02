@@ -1,6 +1,7 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import { platform } from 'os';
+import { dirname } from 'path';
 
 const IS_MAC = platform() === 'darwin';
 const IS_WIN = platform() === 'win32';
@@ -142,4 +143,41 @@ export function pickJsonFile(initialDir = '') {
     }
     return null;
   } catch { return null; }
+}
+
+// ─── Открыть / показать / буфер обмена ───────────────────────────────
+// execFileSync с массивом аргументов (а не строкой) — чтобы пути с
+// пробелами, кириллицей и спецсимволами не требовали ручного экранирования
+// и не открывали дыру в shell. Linux — best-effort, без гарантий.
+
+/**
+ * Открывает файл (или папку) в приложении по умолчанию.
+ */
+export function openFile(path) {
+  if (IS_MAC) execFileSync('open', [path]);
+  else if (IS_WIN) execFileSync('cmd', ['/c', 'start', '', path]);
+  else execFileSync('xdg-open', [path]);
+}
+
+/**
+ * Показывает файл в Finder / проводнике, выделяя его.
+ */
+export function revealFile(path) {
+  if (IS_MAC) execFileSync('open', ['-R', path]);
+  else if (IS_WIN) {
+    // explorer /select возвращает код выхода 1 даже при успехе — глотаем
+    try { execFileSync('explorer', [`/select,${path}`]); } catch {}
+  } else execFileSync('xdg-open', [dirname(path)]);
+}
+
+/**
+ * Кладёт текст в системный буфер обмена.
+ */
+export function copyToClipboard(text) {
+  if (IS_MAC) execFileSync('pbcopy', [], { input: text });
+  else if (IS_WIN) execFileSync('clip', [], { input: text });
+  else {
+    try { execFileSync('xclip', ['-selection', 'clipboard'], { input: text }); }
+    catch { execFileSync('xsel', ['--clipboard', '--input'], { input: text }); }
+  }
 }

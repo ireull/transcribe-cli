@@ -1,13 +1,13 @@
 import { select, input, search } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, basename, resolve } from 'path';
 import { execSync } from 'child_process';
 
 import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
-import { pickFile, pickFiles, pickFolder, pickJsonFile } from './dialogs.js';
+import { pickFile, pickFiles, pickFolder, pickJsonFile, openFile, revealFile, copyToClipboard } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
 import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate } from './gdrive.js';
@@ -113,6 +113,43 @@ async function yesNo(message, defaultYes = true) {
   });
 }
 
+// ─── Что делать с готовым результатом ───────────────────────────────
+
+// Меню после успешной транскрипции: открыть/показать/скопировать.
+// Зациклено, чтобы можно было сделать несколько действий подряд
+// (например, скопировать текст И открыть файл) и потом выйти «Дальше».
+async function offerPostActions(outPath) {
+  while (true) {
+    const action = await select({
+      message: 'Результат:',
+      choices: [
+        { name: '📖  Открыть файл', value: 'open' },
+        { name: '📂  Показать в папке', value: 'reveal' },
+        { name: '📋  Скопировать текст', value: 'copy-text' },
+        { name: '🔗  Скопировать путь', value: 'copy-path' },
+        { name: '↩️   Дальше', value: 'done' },
+      ],
+      default: 'done',
+    });
+    if (action === 'done') return;
+    try {
+      if (action === 'open') { openFile(outPath); console.log(chalk.dim('  Открываю...')); }
+      else if (action === 'reveal') { revealFile(outPath); console.log(chalk.dim('  Открываю папку...')); }
+      else if (action === 'copy-text') { copyToClipboard(readFileSync(outPath, 'utf-8')); console.log(chalk.green('  Текст скопирован в буфер.')); }
+      else if (action === 'copy-path') { copyToClipboard(outPath); console.log(chalk.green('  Путь скопирован.')); }
+    } catch (e) {
+      console.log(chalk.yellow(`  Не удалось: ${e.message}`));
+    }
+  }
+}
+
+// Для batch: предложить открыть папку целиком, а не каждый файл.
+async function offerOpenFolder(dir) {
+  if (await yesNo('Открыть папку с результатами?', false)) {
+    try { openFile(dir); } catch (e) { console.log(chalk.yellow(`  Не удалось: ${e.message}`)); }
+  }
+}
+
 // ─── Первый запуск ──────────────────────────────────────────────────
 
 async function firstRunSetup(cfg) {
@@ -202,7 +239,8 @@ async function runFileMode(apiKey, lang, speakers, cfg) {
 
   const outputDir = await askOutputDir(cfg, dirname(filePath));
   console.log();
-  await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+  const out = await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+  if (out) await offerPostActions(out);
 }
 
 async function runBatchMode(apiKey, lang, speakers, cfg) {
@@ -216,11 +254,13 @@ async function runBatchMode(apiKey, lang, speakers, cfg) {
 
   const outputDir = await askOutputDir(cfg, dirname(files[0]));
   console.log();
+  let anyOk = false;
   for (let i = 0; i < files.length; i++) {
     console.log(chalk.cyan(`── [${i+1}/${files.length}] ${basename(files[i])} ──`));
-    try { await runTranscription(files[i], { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined }); }
+    try { if (await runTranscription(files[i], { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined })) anyOk = true; }
     catch (e) { console.log(chalk.red(`  Ошибка: ${e.message}`)); }
   }
+  if (anyOk) await offerOpenFolder(outputDir);
 }
 
 async function runUrlMode(apiKey, lang, speakers, cfg) {
@@ -228,7 +268,8 @@ async function runUrlMode(apiKey, lang, speakers, cfg) {
   if (!isUrl(url)) { console.log(chalk.red('  Нужна ссылка http(s)://')); return; }
   const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir());
   console.log();
-  await runTranscription(url.trim(), { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+  const out = await runTranscription(url.trim(), { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+  if (out) await offerPostActions(out);
 }
 
 async function runMeetMode(apiKey, cfg) {
@@ -345,7 +386,8 @@ async function runMeetMode(apiKey, cfg) {
   try {
     const filePath = await downloadFile(drive, selectedFile.id, selectedFile.name, tmpDir);
     console.log();
-    await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+    const out = await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+    if (out) await offerPostActions(out);
   } catch (e) {
     console.log(chalk.red(`  Ошибка: ${e.message}`));
   } finally {
