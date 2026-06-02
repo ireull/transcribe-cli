@@ -80,34 +80,51 @@ export async function findMeetFolder(drive, folderName = 'Meet Recordings') {
 }
 
 /**
- * Листает видео-файлы в папке.
+ * Прокручивает все страницы по запросу `q`, пока не наберёт `limit` файлов.
+ * Drive отдаёт максимум 1000 за раз — для поиска нам нужно широкое окно
+ * (фильтрация в UI локальная, без запроса на каждую букву), поэтому
+ * листаем с пагинацией, а не одним вызовом с маленьким pageSize.
+ */
+async function paginateFiles(drive, q, limit) {
+  const files = [];
+  let pageToken;
+  do {
+    const res = await drive.files.list({
+      q,
+      fields: 'nextPageToken, files(id, name, size, createdTime, mimeType)',
+      orderBy: 'createdTime desc',
+      pageSize: Math.min(1000, limit - files.length),
+      pageToken,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    files.push(...(res.data.files || []));
+    pageToken = res.data.nextPageToken;
+  } while (pageToken && files.length < limit);
+  return files.slice(0, limit);
+}
+
+/**
+ * Листает видео/аудио-файлы в папке (свежие сверху).
  * Возвращает [{id, name, size, createdTime, mimeType}]
  */
-export async function listRecordings(drive, folderId, limit = 20) {
-  const res = await drive.files.list({
-    q: `'${folderId}' in parents and trashed = false and (mimeType contains 'video/' or mimeType contains 'audio/')`,
-    fields: 'files(id, name, size, createdTime, mimeType)',
-    orderBy: 'createdTime desc',
-    pageSize: limit,
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
-  });
-  return res.data.files || [];
+export async function listRecordings(drive, folderId, limit = 500) {
+  return paginateFiles(
+    drive,
+    `'${folderId}' in parents and trashed = false and (mimeType contains 'video/' or mimeType contains 'audio/')`,
+    limit
+  );
 }
 
 /**
  * Листает все файлы, доступные SA (если папки нет).
  */
-export async function listAllFiles(drive, limit = 20) {
-  const res = await drive.files.list({
-    q: `trashed = false and (mimeType contains 'video/' or mimeType contains 'audio/')`,
-    fields: 'files(id, name, size, createdTime, mimeType)',
-    orderBy: 'createdTime desc',
-    pageSize: limit,
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
-  });
-  return res.data.files || [];
+export async function listAllFiles(drive, limit = 500) {
+  return paginateFiles(
+    drive,
+    `trashed = false and (mimeType contains 'video/' or mimeType contains 'audio/')`,
+    limit
+  );
 }
 
 /**
@@ -147,7 +164,7 @@ export async function downloadFile(drive, fileId, fileName, destDir) {
  * Главная функция — получает Drive-клиент и список записей.
  * Возвращает { drive, files } или null при ошибке.
  */
-export async function getMeetRecordings(limit = 20) {
+export async function getMeetRecordings(limit = 500) {
   const drive = getDriveClient();
 
   // Сначала ищем папку Meet Recordings

@@ -1,4 +1,4 @@
-import { select, input } from '@inquirer/prompts';
+import { select, input, search } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
 import { existsSync, statSync } from 'fs';
@@ -288,7 +288,7 @@ async function runMeetMode(apiKey, cfg) {
 
   let drive, files;
   try {
-    ({ drive, files } = await getMeetRecordings(20));
+    ({ drive, files } = await getMeetRecordings());
     spinner.succeed(`Найдено записей: ${files.length}`);
   } catch (e) {
     spinner.fail(chalk.red(`Ошибка: ${e.message}`));
@@ -300,15 +300,35 @@ async function runMeetMode(apiKey, cfg) {
     return;
   }
 
-  // Показываем список для выбора
-  const choices = files.map(f => ({
-    name: `${f.name}  ${chalk.dim(`(${formatSize(f.size)}, ${formatDate(f.createdTime)})`)}`,
-    value: f.id,
-  }));
-  choices.push({ name: chalk.dim('↩️  Назад'), value: 'back' });
+  // Поиск с фильтром «по мере ввода»: печатаешь часть названия или даты,
+  // список сужается мгновенно (фильтрация локальная, без запросов к Drive).
+  // Несколько слов через пробел — все должны встретиться (AND), так что
+  // «иван 06» найдёт встречу с Иваном в июне. Пустой ввод — все записи.
+  const MAX_SHOWN = 50;
+  const BACK = '__back__';
+  const labelOf = f => `${f.name}  ${chalk.dim(`(${formatSize(f.size)}, ${formatDate(f.createdTime)})`)}`;
+  const hayOf = f => `${f.name} ${formatDate(f.createdTime)}`.toLowerCase();
 
-  const selectedId = await select({ message: 'Какую запись транскрибировать?', choices });
-  if (selectedId === 'back') return;
+  const selectedId = await search({
+    message: `Найдите запись (${files.length} шт., печатайте для фильтра):`,
+    source: (term) => {
+      const tokens = (term || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const matched = tokens.length
+        ? files.filter(f => { const h = hayOf(f); return tokens.every(t => h.includes(t)); })
+        : files;
+
+      if (matched.length === 0)
+        return [{ name: chalk.dim('Ничего не найдено — ↩️  назад'), value: BACK }];
+
+      const choices = matched.slice(0, MAX_SHOWN).map(f => ({ name: labelOf(f), value: f.id }));
+      if (matched.length > MAX_SHOWN)
+        choices.push({ name: chalk.dim(`…ещё ${matched.length - MAX_SHOWN} — уточните запрос`), value: BACK });
+      if (!tokens.length)
+        choices.push({ name: chalk.dim('↩️  Назад'), value: BACK });
+      return choices;
+    },
+  });
+  if (selectedId === BACK) return;
 
   const selectedFile = files.find(f => f.id === selectedId);
   if (!selectedFile) return;
