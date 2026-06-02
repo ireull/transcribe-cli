@@ -264,6 +264,7 @@ async function runFileMode(apiKey, opts, cfg) {
   console.log();
   const out = await runTranscription(filePath, { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
   if (out) await offerPostActions(out);
+  return out;
 }
 
 async function runBatchMode(apiKey, opts, cfg) {
@@ -284,6 +285,7 @@ async function runBatchMode(apiKey, opts, cfg) {
     catch (e) { console.log(chalk.red(`  Ошибка: ${e.message}`)); }
   }
   if (anyOk) await offerOpenFolder(outputDir);
+  return anyOk;
 }
 
 async function runUrlMode(apiKey, opts, cfg) {
@@ -293,6 +295,7 @@ async function runUrlMode(apiKey, opts, cfg) {
   console.log();
   const out = await runTranscription(url.trim(), { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
   if (out) await offerPostActions(out);
+  return out;
 }
 
 async function runMeetMode(apiKey, cfg) {
@@ -412,16 +415,18 @@ async function runMeetMode(apiKey, cfg) {
   // Скачиваем во временную папку
   const tmpDir = makeTmp();
 
+  let out = null;
   try {
     const filePath = await downloadFile(drive, selectedFile.id, selectedFile.name, tmpDir);
     console.log();
-    const out = await runTranscription(filePath, { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
+    out = await runTranscription(filePath, { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
     if (out) await offerPostActions(out);
   } catch (e) {
     console.log(chalk.red(`  Ошибка: ${e.message}`));
   } finally {
     cleanTmp(tmpDir);
   }
+  return out;
 }
 
 // ─── Управление списком спикеров ─────────────────────────────────────
@@ -627,19 +632,20 @@ async function interactiveMenu() {
 
     if (mode === 'exit') { break; }
 
+    let produced;
     try {
       if (mode === 'settings') {
         await editSettings(cfg);
         continue;
       }
       if (mode === 'meet') {
-        await runMeetMode(apiKey, cfg);
+        produced = await runMeetMode(apiKey, cfg);
       } else {
         const opts = await askOptions(cfg);
         opts.summarize = buildSummarizeCb(cfg);
-        if (mode === 'file') await runFileMode(apiKey, opts, cfg);
-        else if (mode === 'batch') await runBatchMode(apiKey, opts, cfg);
-        else if (mode === 'url') await runUrlMode(apiKey, opts, cfg);
+        if (mode === 'file') produced = await runFileMode(apiKey, opts, cfg);
+        else if (mode === 'batch') produced = await runBatchMode(apiKey, opts, cfg);
+        else if (mode === 'url') produced = await runUrlMode(apiKey, opts, cfg);
       }
     } catch (e) {
       if (e.isAuthError) {
@@ -652,12 +658,13 @@ async function interactiveMenu() {
       throw e;
     }
 
-    console.log();
-    let again;
-    try { again = await yesNo('Ещё?', true); }
-    catch (e) { if (isExitPrompt(e)) break; throw e; }
-    if (!again) { console.log(chalk.dim('  Пока!')); break; }
-    console.log();
+    // Успех (результат был, пользователь уже взаимодействовал с меню «Результат») —
+    // сразу обратно в главное меню, без вопроса «Ещё?». При отмене/ошибке —
+    // короткая пауза, чтобы успеть прочитать сообщение до console.clear().
+    if (!produced) {
+      try { await input({ message: chalk.dim('↵ — в меню') }); }
+      catch (e) { if (isExitPrompt(e)) break; throw e; }
+    }
   }
 }
 
