@@ -44,7 +44,7 @@ install.bat                      # Windows: то же самое
 
 Код разделён по ответственности, а не по слоям — каждый модуль замкнут и экспортирует свой кусок:
 
-- [app.js](app.js) — UI, меню, режимы (`runFileMode`, `runBatchMode`, `runUrlMode`, `runMeetMode`), настройки. Весь `@inquirer/prompts` живёт здесь.
+- [app.js](app.js) — UI, меню, режимы (`runFileMode`, `runBatchMode`, `runUrlMode`, `runMeetMode`), настройки. Весь `@inquirer/prompts` живёт здесь. Ctrl+C внутри под-флоу ловится (`isExitPrompt` → `ExitPromptError`) как «назад в меню» (`continue`), а не выход; завершает программу только Ctrl+C из главного меню или пункт «Выход». Во время самой транскрипции (не промпт) Ctrl+C — это уже SIGINT → глобальный cleanup в transcribe.js.
 - [transcribe.js](transcribe.js) — **ядро пайплайна**. `runTranscription(source, opts)` — единственная публичная функция, которая знает как скачать/сконвертировать/отправить в Deepgram/записать MD. Остальные модули не должны знать про Deepgram.
 - [gdrive.js](gdrive.js) — Google Drive API и Service Account. Тоже автономен: умеет искать Meet Recordings, скачивать файл, импортировать SA-ключ, чистить авто-имена Meet (`cleanMeetName`: срезает «– Recording»/таймзоны, нормализует дату, ловит дефолтные коды встреч `xxx-xxxx-xxx`).
 - [summarize.js](summarize.js) — авто-саммари через OpenRouter (OpenAI-совместимый `/chat/completions`). Автономен, как gdrive.js. `summarizeTranscript(text, {apiKey, model})` → `{title, paragraph}`; ретраит 429 с бэкоффом, парсит JSON-ответ модели с фолбэком. Дефолт-модель `qwen/qwen3-8b:free` (русский ок; у Deepgram саммари — только английский). Подключается callback'ом в `runTranscription` (как `onSpeakers`), чтобы ядро не зависело от OpenRouter.

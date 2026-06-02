@@ -14,6 +14,10 @@ import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, f
 import { summarizeTranscript } from './summarize.js';
 import { runUpgrade } from './upgrade.js';
 
+// Ctrl+C внутри inquirer-промпта бросает ExitPromptError. Ловим его, чтобы
+// трактовать как «назад», а не «убить приложение».
+const isExitPrompt = (e) => !!e && (e.name === 'ExitPromptError' || /force closed/i.test(e.message || ''));
+
 // Callback саммари для runTranscription. undefined, если фича выключена или нет ключа —
 // тогда транскрипция идёт как раньше, без обращения к OpenRouter.
 function buildSummarizeCb(cfg) {
@@ -180,7 +184,7 @@ async function ensureApiKey(cfg) {
 // Порядок фиксированный: пункты не прыгают при вкл/выкл.
 async function askOptions(cfg) {
   const picked = await checkbox({
-    message: 'Опции транскрипции (␣ — вкл/выкл, ↵ — старт):',
+    message: 'Опции транскрипции (␣ вкл/выкл · ↵ старт · ^C назад):',
     choices: [
       { name: 'Разделять спикеров',              value: 'speakers', checked: cfg.speakers !== false },
       { name: 'Склеивать реплики одного спикера', value: 'merge',    checked: cfg.mergeUtterances !== false },
@@ -370,7 +374,7 @@ async function runMeetMode(apiKey, cfg) {
   const hayOf = f => `${f.name} ${formatDate(f.createdTime)}`.toLowerCase();
 
   const selectedId = await search({
-    message: `Найдите запись (${files.length} шт., печатайте для фильтра):`,
+    message: `Найдите запись (${files.length} шт. · печатайте для фильтра · ^C назад):`,
     source: (term) => {
       const tokens = (term || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
       const matched = tokens.length
@@ -612,12 +616,22 @@ async function interactiveMenu() {
       { name: '👋  Выход', value: 'exit' },
     ];
 
-    const mode = await select({ message: 'Что делаем?', choices });
+    // Ctrl+C в ГЛАВНОМ меню — выход. В под-флоу (ниже) — «назад».
+    let mode;
+    try {
+      mode = await select({ message: 'Что делаем?', choices });
+    } catch (e) {
+      if (isExitPrompt(e)) break;
+      throw e;
+    }
 
     if (mode === 'exit') { break; }
-    if (mode === 'settings') { await editSettings(cfg); continue; }
 
     try {
+      if (mode === 'settings') {
+        await editSettings(cfg);
+        continue;
+      }
       if (mode === 'meet') {
         await runMeetMode(apiKey, cfg);
       } else {
@@ -633,11 +647,16 @@ async function interactiveMenu() {
         if (newKey) apiKey = newKey;
         continue;
       }
+      // Ctrl+C на любом шаге под-флоу — не выход, а возврат в меню.
+      if (isExitPrompt(e)) { console.log(chalk.dim('\n  ↩ Назад в меню')); continue; }
       throw e;
     }
 
     console.log();
-    if (!(await yesNo('Ещё?', true))) { console.log(chalk.dim('  Пока!')); break; }
+    let again;
+    try { again = await yesNo('Ещё?', true); }
+    catch (e) { if (isExitPrompt(e)) break; throw e; }
+    if (!again) { console.log(chalk.dim('  Пока!')); break; }
     console.log();
   }
 }
