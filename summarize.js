@@ -21,7 +21,7 @@ const SYSTEM = 'Ты ассистент, который кратко излаг�
  * Модель может вернуть JSON в ```-блоке или с мусором вокруг — достаём
  * первый {...}. Фолбэк: первая строка = title, остальное = paragraph.
  */
-function parseSummary(text) {
+export function parseSummary(text) {
   const raw = (text || '').trim();
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
@@ -46,7 +46,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
  *
  * Ретраим только 429 (рейт-лимит апстрим-провайдера у free-моделей) с бэкоффом.
  */
-export async function summarizeTranscript(text, { apiKey, model }) {
+export async function summarizeTranscript(text, { apiKey, model, retryDelays = [0, 2000, 5000] }) {
   if (!apiKey) throw new Error('Нет ключа OpenRouter');
   const transcript = (text || '').slice(0, MAX_CHARS);
   if (transcript.replace(/\s/g, '').length < 30) {
@@ -61,9 +61,8 @@ export async function summarizeTranscript(text, { apiKey, model }) {
     ],
   });
 
-  const delays = [0, 2000, 5000]; // 1 попытка + 2 ретрая на 429
   let lastErr;
-  for (const delay of delays) {
+  for (const delay of retryDelays) { // 1 попытка + ретраи на 429/сеть
     if (delay) await sleep(delay);
     let resp;
     try {

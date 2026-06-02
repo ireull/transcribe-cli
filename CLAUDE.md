@@ -13,7 +13,9 @@ node cli.js <src> -l en -s -o ./out   # флаги: язык, спикеры, п
 install.bat                      # Windows: то же самое
 ```
 
-Тестов и линтера нет. Проверка — руками: прогнать `node cli.js` на локальном файле, ссылке и Meet-записи.
+Юнит-тесты — `npm test` (встроенный `node --test`, без зависимостей; файлы в [test/](test/)). Покрыта чистая логика: `formatMarkdown` (склейка/саммари), `buildDeepgramParams`, `cleanMeetName`, `parseSummary`, `summarizeTranscript` (через мок `fetch`), merge конфига. Линтера нет.
+
+Что тестами НЕ покрыто (нужны живые сервисы/TTY) — проверять руками: реальные вызовы Deepgram/OpenRouter, ffmpeg/yt-dlp, интерактивные `@inquirer`-промпты. Для промптов есть быстрый способ прогнать вручную через tmux (`tmux send-keys` + `capture-pane`). Базовый ручной прогон: `node cli.js` на локальном файле, ссылке и Meet-записи.
 
 Важные внешние зависимости (проверяются в рантайме через `which`/`where`):
 - `ffmpeg` — конвертация всего, что не в whitelist прямых форматов

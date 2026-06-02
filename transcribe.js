@@ -153,20 +153,26 @@ function convertToOpus(input, tmp) {
   return out;
 }
 
-async function callDeepgram(filePath, { model, lang, autoLang, speakers, numerals, apiKey }) {
-  const ext = extname(filePath).toLowerCase();
-  const body = readFileSync(filePath);
+// Сборка query-параметров для Deepgram вынесена отдельно — чистая и тестируемая.
+// Язык: либо автоопределение, либо явный код (оба сразу слать нельзя).
+// diarize_model=latest — новый (v2) диаризатор; сам включает диаризацию и
+// НЕ комбинируется с legacy `diarize=true` (Deepgram отклонит запрос при обоих).
+// numerals: «двадцать три» → «23» (для русского поддержано в nova-3).
+export function buildDeepgramParams({ model = 'nova-3', lang, autoLang, speakers, numerals }) {
   const params = new URLSearchParams({
     model, smart_format: 'true', punctuate: 'true', paragraphs: 'true', utterances: 'true',
   });
-  // Язык: либо автоопределение, либо явный код. Оба одновременно слать нельзя.
   if (autoLang) params.set('detect_language', 'true');
   else params.set('language', lang);
-  // diarize_model=latest — это новый (v2) диаризатор; он сам включает диаризацию,
-  // и его НЕЛЬЗЯ комбинировать с legacy `diarize=true` (Deepgram отклонит запрос).
   if (speakers) params.set('diarize_model', 'latest');
-  // numerals: «двадцать три» → «23» (для русского поддержано в nova-3).
   if (numerals) params.set('numerals', 'true');
+  return params;
+}
+
+async function callDeepgram(filePath, { model, lang, autoLang, speakers, numerals, apiKey }) {
+  const ext = extname(filePath).toLowerCase();
+  const body = readFileSync(filePath);
+  const params = buildDeepgramParams({ model, lang, autoLang, speakers, numerals });
 
   let resp;
   try {
@@ -211,7 +217,7 @@ export function formatTs(sec) {
     : `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
 }
 
-function formatMarkdown(data, speakers, title = '', speakerNames = {}, merge = true, summary = '') {
+export function formatMarkdown(data, speakers, title = '', speakerNames = {}, merge = true, summary = '') {
   const lines = [];
   if (title) lines.push(`# ${title}`, '');
 
