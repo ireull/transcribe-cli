@@ -60,9 +60,9 @@ install.bat                      # Windows: то же самое
 1. `makeTmp()` — создаёт `os.tmpdir()/transcribe-<random>/` и регистрирует его в глобальном реестре `activeTmpDirs` (см. ниже). В `finally` — `cleanTmp`, который и удаляет директорию, и снимает её с реестра.
 2. URL → `yt-dlp -x --audio-format opus` в tmp. Файл → читается как есть.
 3. Если расширение не в `DIRECT_AUDIO` (whitelist: `.wav .mp3 .ogg .flac .m4a .opus .webm`) — `ffmpeg` конвертирует в **opus 32 kbps mono 16 kHz** (режим `-application voip`). На качество распознавания речи Deepgram'ом это не влияет, но файл ~в 8× компактнее WAV PCM (115 MB/час → 14 MB/час) — снимает таймауты аплоада на длинных Meet-записях.
-4. Весь файл загружается в память (`readFileSync`) и одним POST уходит в Deepgram. Стрима нет — предел по размеру = RAM процесса.
+4. Весь файл загружается в память (`readFileSync`) и одним POST уходит в Deepgram. Стрима нет — предел по размеру = RAM процесса. Параметры запроса собираются в [callDeepgram](transcribe.js#L156): всегда `smart_format/punctuate/paragraphs/utterances`; язык — либо `detect_language=true` (если `autoLang`), либо `language=<код>` (взаимоисключающие); спикеры — `diarize_model=latest` (**новый v2-диаризатор; legacy `diarize=true` слать НЕЛЬЗЯ — Deepgram отклонит запрос при обоих**); `numerals=true` опционально. Audio-intelligence фичи (`summarize`/`topics`/`sentiment`) — **только английский**, для русского не подключать (`summarize`+`language=ru` = 400, роняет весь запрос).
 5. Результат форматируется в Markdown. Два режима вывода:
-   - `speakers=true` → блоки `**Name** [ts]` по `results.utterances`
+   - `speakers=true` → блоки `**Name** [ts]` по `results.utterances`. При `merge=true` (дефолт) подряд идущие реплики одного спикера склеиваются в один блок (таймстамп — от первой); при `merge=false` — по одной.
    - иначе → параграфы из `results.channels[0].alternatives[0].paragraphs`
 6. Если имя файла уже существует в `outputDir`, добавляется суффикс `_1`, `_2` ... (не перезаписываем).
 
@@ -75,7 +75,7 @@ install.bat                      # Windows: то же самое
 ### Конфигурация и secrets
 
 Два отдельных файла в XDG-папке (`$XDG_CONFIG_HOME/transcribe-cli/` или `~/.config/transcribe-cli/` по умолчанию):
-- `config.json` — API-ключ Deepgram, язык, папки, имена спикеров, флаг `shortcutOffered`
+- `config.json` — API-ключ Deepgram, опции транскрипции (`autoLang`, `lang`, `speakers`, `mergeUtterances`, `numerals`), папки, имена спикеров. Опции редактируются единым чеклистом (`@inquirer/checkbox`) в [askOptions](app.js) и запоминаются между запусками — фикс. порядок, предзаполнено из конфига, обычно достаточно Enter. Ярлык на рабочий стол предлагается только в Настройках (вопроса на первом запуске больше нет).
 - `service-account.json` — SA-ключ Google (не смешиваем с config)
 
 `CONFIG_DIR` вычисляется в [config.js](config.js) и экспортируется — [gdrive.js](gdrive.js) импортирует его оттуда, а не дублирует логику вычисления. Это **единственное место** где определяется путь к пользовательским данным.

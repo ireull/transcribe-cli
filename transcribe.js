@@ -153,13 +153,20 @@ function convertToOpus(input, tmp) {
   return out;
 }
 
-async function callDeepgram(filePath, model, language, speakers, apiKey) {
+async function callDeepgram(filePath, { model, lang, autoLang, speakers, numerals, apiKey }) {
   const ext = extname(filePath).toLowerCase();
   const body = readFileSync(filePath);
   const params = new URLSearchParams({
-    model, language, smart_format: 'true', punctuate: 'true', paragraphs: 'true', utterances: 'true',
+    model, smart_format: 'true', punctuate: 'true', paragraphs: 'true', utterances: 'true',
   });
-  if (speakers) params.set('diarize', 'true');
+  // Язык: либо автоопределение, либо явный код. Оба одновременно слать нельзя.
+  if (autoLang) params.set('detect_language', 'true');
+  else params.set('language', lang);
+  // diarize_model=latest — это новый (v2) диаризатор; он сам включает диаризацию,
+  // и его НЕЛЬЗЯ комбинировать с legacy `diarize=true` (Deepgram отклонит запрос).
+  if (speakers) params.set('diarize_model', 'latest');
+  // numerals: «двадцать три» → «23» (для русского поддержано в nova-3).
+  if (numerals) params.set('numerals', 'true');
 
   let resp;
   try {
@@ -204,7 +211,7 @@ export function formatTs(sec) {
     : `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
 }
 
-function formatMarkdown(data, speakers, title = '', speakerNames = {}) {
+function formatMarkdown(data, speakers, title = '', speakerNames = {}, merge = true) {
   const lines = [];
   if (title) lines.push(`# ${title}`, '');
 
@@ -219,11 +226,26 @@ function formatMarkdown(data, speakers, title = '', speakerNames = {}) {
   const results = data?.results || {};
 
   if (speakers && results.utterances) {
-    for (const u of results.utterances) {
-      const name = speakerNames[u.speaker] || `Speaker ${u.speaker ?? '?'}`;
-      const ts = formatTs(u.start ?? 0);
+    const utts = results.utterances;
+    let i = 0;
+    while (i < utts.length) {
+      const spk = utts[i].speaker;
+      const name = speakerNames[spk] || `Speaker ${spk ?? '?'}`;
+      const ts = formatTs(utts[i].start ?? 0);
       lines.push(`**${name}** [${ts}]`);
-      lines.push(u.transcript || '', '');
+      if (merge) {
+        // Склеиваем все подряд идущие реплики одного спикера в один блок:
+        // чище читать и меньше токенов при последующей обработке LLM.
+        const parts = [];
+        while (i < utts.length && utts[i].speaker === spk) {
+          parts.push((utts[i].transcript || '').trim());
+          i++;
+        }
+        lines.push(parts.join(' ').trim(), '');
+      } else {
+        lines.push(utts[i].transcript || '', '');
+        i++;
+      }
     }
     return lines.join('\n');
   }
@@ -260,7 +282,7 @@ export function getSpeakerPreviews(data) {
   return [...seen.entries()].map(([id, lines]) => ({ id, lines }));
 }
 
-export async function runTranscription(source, { speakers, lang, model = 'nova-3', apiKey, outputDir, onSpeakers }) {
+export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, model = 'nova-3', apiKey, outputDir, onSpeakers }) {
   const tmp = makeTmp();
   // Сигналы SIGINT/SIGTERM обрабатываются глобально в makeTmp — он почистит tmp
   // через activeTmpDirs, так что локальный handler больше не нужен.
@@ -296,7 +318,7 @@ export async function runTranscription(source, { speakers, lang, model = 'nova-3
 
     const mb = (statSync(audioPath).size / 1048576).toFixed(1);
     spinner.text = chalk.cyan(`Транскрибирую (${mb} MB)...`);
-    const raw = await callDeepgram(audioPath, model, lang, speakers, apiKey);
+    const raw = await callDeepgram(audioPath, { model, lang, autoLang, speakers, numerals, apiKey });
     spinner.succeed('Транскрибировано');
 
     // Переименование спикеров
@@ -313,7 +335,7 @@ export async function runTranscription(source, { speakers, lang, model = 'nova-3
     let outPath = join(outputDir, `${baseName}.md`);
     let c = 1;
     while (existsSync(outPath)) { outPath = join(outputDir, `${baseName}_${c++}.md`); }
-    writeFileSync(outPath, formatMarkdown(raw, speakers, title, speakerNames), 'utf-8');
+    writeFileSync(outPath, formatMarkdown(raw, speakers, title, speakerNames, merge), 'utf-8');
 
     // Итог
     const d = raw?.metadata?.duration;

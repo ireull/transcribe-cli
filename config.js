@@ -18,11 +18,13 @@ export const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 const DEFAULTS = {
   lang: 'ru',
+  autoLang: true,          // detect_language вместо хардкода языка
   speakers: true,
+  mergeUtterances: true,   // склеивать подряд идущие реплики одного спикера
+  numerals: true,          // числа цифрами (Deepgram numerals)
   lastOutputDir: '',
   lastOpenDir: '',
   apiKey: '',
-  shortcutOffered: false,
   speakerNames: [],
 };
 

@@ -1,4 +1,4 @@
-import { select, input, search } from '@inquirer/prompts';
+import { select, input, search, checkbox } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
 import { existsSync, statSync, readFileSync } from 'fs';
@@ -150,19 +150,6 @@ async function offerOpenFolder(dir) {
   }
 }
 
-// ─── Первый запуск ──────────────────────────────────────────────────
-
-async function firstRunSetup(cfg) {
-  if (cfg.shortcutOffered) return;
-  cfg.shortcutOffered = true;
-  saveConfig(cfg);
-  console.log();
-  const want = await yesNo('Добавить ярлык на рабочий стол?', true);
-  if (want) createShortcut();
-  else console.log(chalk.dim('  Ок. Позже: настройки → ярлык, или transcribe --install-shortcut'));
-  console.log();
-}
-
 // ─── Проверки ───────────────────────────────────────────────────────
 
 async function ensureApiKey(cfg) {
@@ -180,21 +167,45 @@ async function ensureApiKey(cfg) {
 
 // ─── Опции ──────────────────────────────────────────────────────────
 
+// Единый чеклист опций. Предзаполнен из конфига → обычно достаточно Enter
+// (запоминаем последнее, не переспрашиваем каждый раз). Пробел — переключить.
+// Порядок фиксированный: пункты не прыгают при вкл/выкл.
 async function askOptions(cfg) {
-  let lang = await select({
-    message: 'Язык аудио',
+  const picked = await checkbox({
+    message: 'Опции транскрипции (␣ — вкл/выкл, ↵ — старт):',
     choices: [
-      { name: '🇷🇺  Русский', value: 'ru' },
-      { name: '🇬🇧  English', value: 'en' },
-      { name: '🌐  Другой', value: 'other' },
+      { name: 'Разделять спикеров',              value: 'speakers', checked: cfg.speakers !== false },
+      { name: 'Склеивать реплики одного спикера', value: 'merge',    checked: cfg.mergeUtterances !== false },
+      { name: 'Числа цифрами',                    value: 'numerals', checked: cfg.numerals !== false },
+      { name: 'Авто-определение языка',           value: 'autoLang', checked: cfg.autoLang !== false },
     ],
-    default: cfg.lang || 'ru',
+    loop: false,
   });
-  if (lang === 'other') lang = await input({ message: 'Код языка (BCP-47):', default: 'ru' });
 
-  const speakers = await yesNo('Разделять спикеров?', cfg.speakers ?? true);
-  cfg.lang = lang; cfg.speakers = speakers; saveConfig(cfg);
-  return { lang, speakers };
+  const speakers = picked.includes('speakers');
+  const merge    = picked.includes('merge');
+  const numerals = picked.includes('numerals');
+  const autoLang = picked.includes('autoLang');
+
+  // Язык спрашиваем только если автоопределение выключено.
+  let lang = cfg.lang || 'ru';
+  if (!autoLang) {
+    lang = await select({
+      message: 'Язык аудио',
+      choices: [
+        { name: '🇷🇺  Русский', value: 'ru' },
+        { name: '🇬🇧  English', value: 'en' },
+        { name: '🌐  Другой', value: 'other' },
+      ],
+      default: cfg.lang && ['ru', 'en'].includes(cfg.lang) ? cfg.lang : 'ru',
+    });
+    if (lang === 'other') lang = await input({ message: 'Код языка (BCP-47):', default: 'ru' });
+  }
+
+  cfg.speakers = speakers; cfg.mergeUtterances = merge; cfg.numerals = numerals;
+  cfg.autoLang = autoLang; cfg.lang = lang;
+  saveConfig(cfg);
+  return { speakers, merge, numerals, autoLang, lang };
 }
 
 async function askOutputDir(cfg, defaultDir, label = 'Рядом с файлом') {
@@ -222,7 +233,7 @@ async function askOutputDir(cfg, defaultDir, label = 'Рядом с файлом
 
 // ─── Режимы ─────────────────────────────────────────────────────────
 
-async function runFileMode(apiKey, lang, speakers, cfg) {
+async function runFileMode(apiKey, opts, cfg) {
   console.log(chalk.dim('  Открываю диалог выбора файла...'));
   const filePath = pickFile(cfg.lastOpenDir || homedir());
   if (!filePath) { console.log(chalk.yellow('  Отменено.')); return; }
@@ -239,11 +250,11 @@ async function runFileMode(apiKey, lang, speakers, cfg) {
 
   const outputDir = await askOutputDir(cfg, dirname(filePath));
   console.log();
-  const out = await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+  const out = await runTranscription(filePath, { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
   if (out) await offerPostActions(out);
 }
 
-async function runBatchMode(apiKey, lang, speakers, cfg) {
+async function runBatchMode(apiKey, opts, cfg) {
   console.log(chalk.dim('  Выберите файлы (Ctrl/Cmd+клик)...'));
   const files = pickFiles(cfg.lastOpenDir || homedir());
   if (!files.length) { console.log(chalk.yellow('  Отменено.')); return; }
@@ -257,18 +268,18 @@ async function runBatchMode(apiKey, lang, speakers, cfg) {
   let anyOk = false;
   for (let i = 0; i < files.length; i++) {
     console.log(chalk.cyan(`── [${i+1}/${files.length}] ${basename(files[i])} ──`));
-    try { if (await runTranscription(files[i], { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined })) anyOk = true; }
+    try { if (await runTranscription(files[i], { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined })) anyOk = true; }
     catch (e) { console.log(chalk.red(`  Ошибка: ${e.message}`)); }
   }
   if (anyOk) await offerOpenFolder(outputDir);
 }
 
-async function runUrlMode(apiKey, lang, speakers, cfg) {
+async function runUrlMode(apiKey, opts, cfg) {
   const url = await input({ message: 'Вставьте ссылку:' });
   if (!isUrl(url)) { console.log(chalk.red('  Нужна ссылка http(s)://')); return; }
   const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir());
   console.log();
-  const out = await runTranscription(url.trim(), { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+  const out = await runTranscription(url.trim(), { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
   if (out) await offerPostActions(out);
 }
 
@@ -362,8 +373,10 @@ async function runMeetMode(apiKey, cfg) {
         return [{ name: chalk.dim('Ничего не найдено — ↩️  назад'), value: BACK }];
 
       const choices = matched.slice(0, MAX_SHOWN).map(f => ({ name: labelOf(f), value: f.id }));
+      // Неактивная подпись-индикатор: показывает, что совпадений больше, чем влезло.
+      // Не выбирается (disabled) — это не кнопка «показать ещё», а подсказка «сузь запрос».
       if (matched.length > MAX_SHOWN)
-        choices.push({ name: chalk.dim(`…ещё ${matched.length - MAX_SHOWN} — уточните запрос`), value: BACK });
+        choices.push({ name: `…ещё ${matched.length - MAX_SHOWN} — уточните запрос`, value: '__more__', disabled: true });
       if (!tokens.length)
         choices.push({ name: chalk.dim('↩️  Назад'), value: BACK });
       return choices;
@@ -375,7 +388,7 @@ async function runMeetMode(apiKey, cfg) {
   if (!selectedFile) return;
 
   // Опции транскрипции
-  const { lang, speakers } = await askOptions(cfg);
+  const opts = await askOptions(cfg);
 
   // Куда сохранить
   const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir(), 'Домашняя папка');
@@ -386,7 +399,7 @@ async function runMeetMode(apiKey, cfg) {
   try {
     const filePath = await downloadFile(drive, selectedFile.id, selectedFile.name, tmpDir);
     console.log();
-    const out = await runTranscription(filePath, { speakers, lang, apiKey, outputDir, onSpeakers: speakers ? askSpeakerNames : undefined });
+    const out = await runTranscription(filePath, { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
     if (out) await offerPostActions(out);
   } catch (e) {
     console.log(chalk.red(`  Ошибка: ${e.message}`));
@@ -498,8 +511,10 @@ async function editSettings(cfg) {
     console.log();
     console.log(chalk.cyan('  ┌─ Окружение ─────────────────────'));
     console.log(chalk.cyan('  │') + ` API-ключ Deepgram:  ${key ? chalk.green('✓')+' '+masked : chalk.red('✗ не задан')}`);
-    console.log(chalk.cyan('  │') + ` Язык:      ${cfg.lang||'ru'}`);
+    console.log(chalk.cyan('  │') + ` Язык:      ${cfg.autoLang!==false?'авто':(cfg.lang||'ru')}`);
     console.log(chalk.cyan('  │') + ` Спикеры:   ${cfg.speakers?'да':'нет'}`);
+    console.log(chalk.cyan('  │') + ` Склейка реплик: ${cfg.mergeUtterances!==false?'да':'нет'}`);
+    console.log(chalk.cyan('  │') + ` Числа цифрами:  ${cfg.numerals!==false?'да':'нет'}`);
     console.log(chalk.cyan('  │') + ` Папка:     ${cfg.lastOutputDir||chalk.dim('рядом с файлом')}`);
     console.log(chalk.cyan('  │') + ` Ярлык:     ${shortcutExists()?chalk.green('✓ есть'):chalk.dim('нет')}`);
     console.log(chalk.cyan('  │') + ` SA-ключ Google Drive:   ${hasSaKey()?chalk.green('✓')+' '+getSaKeyPath():chalk.dim('нет')}`);
@@ -517,7 +532,6 @@ async function interactiveMenu() {
   showHeader();
   const cfg = loadConfig();
   let apiKey = await ensureApiKey(cfg);
-  await firstRunSetup(cfg);
 
   while (true) {
     console.clear();
@@ -541,10 +555,10 @@ async function interactiveMenu() {
       if (mode === 'meet') {
         await runMeetMode(apiKey, cfg);
       } else {
-        const { lang, speakers } = await askOptions(cfg);
-        if (mode === 'file') await runFileMode(apiKey, lang, speakers, cfg);
-        else if (mode === 'batch') await runBatchMode(apiKey, lang, speakers, cfg);
-        else if (mode === 'url') await runUrlMode(apiKey, lang, speakers, cfg);
+        const opts = await askOptions(cfg);
+        if (mode === 'file') await runFileMode(apiKey, opts, cfg);
+        else if (mode === 'batch') await runBatchMode(apiKey, opts, cfg);
+        else if (mode === 'url') await runUrlMode(apiKey, opts, cfg);
       }
     } catch (e) {
       if (e.isAuthError) {
@@ -556,7 +570,7 @@ async function interactiveMenu() {
     }
 
     console.log();
-    if (!(await yesNo('Еще?', false))) { console.log(chalk.dim('  Пока!')); break; }
+    if (!(await yesNo('Ещё?', true))) { console.log(chalk.dim('  Пока!')); break; }
     console.log();
   }
 }
@@ -580,10 +594,17 @@ export async function cli() {
   if (!apiKey) { console.log(chalk.red('Нужен DEEPGRAM_API_KEY.')); process.exit(1); }
 
   const lang = getFlag(args, '-l') || getFlag(args, '--lang') || cfg.lang || 'ru';
-  const speakers = args.includes('-s') || args.includes('--speakers') || (cfg.speakers ?? true);
+  const speakers = args.includes('--no-speakers') ? false
+    : (args.includes('-s') || args.includes('--speakers') || (cfg.speakers ?? true));
   const outputDir = getFlag(args, '-o') || getFlag(args, '--output-dir') || (isUrl(source) ? process.cwd() : dirname(resolve(source)));
 
-  await runTranscription(source, { speakers, lang, apiKey, outputDir });
+  await runTranscription(source, {
+    speakers, lang,
+    autoLang: false,                       // быстрый режим — язык явный (флаг/конфиг)
+    numerals: cfg.numerals !== false,
+    merge: cfg.mergeUtterances !== false,
+    apiKey, outputDir,
+  });
 }
 
 function getFlag(args, flag) {
