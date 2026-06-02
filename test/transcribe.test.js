@@ -102,9 +102,9 @@ test('buildDeepgramParams: явный язык, без спикеров/чисе
   assert.equal(p.get('numerals'), null);
 });
 
-test('opusEncodeArgs: hq (диаризация) — 96k, без принудительного mono', () => {
+test('opusEncodeArgs: hq (диаризация) — 128k, без принудительного mono', () => {
   const hq = opusEncodeArgs(true);
-  assert.match(hq, /-b:a 96k/);
+  assert.match(hq, /-b:a 128k/);
   assert.doesNotMatch(hq, /-ac 1/);   // каналы сохраняем
 });
 
