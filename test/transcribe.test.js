@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   formatTs, sanitizeFilename, isUrl, getSpeakerPreviews,
-  formatMarkdown, buildDeepgramParams,
+  formatMarkdown, buildDeepgramParams, opusEncodeArgs,
 } from '../transcribe.js';
 
 test('formatTs: mm:ss и h:mm:ss', () => {
@@ -100,4 +100,16 @@ test('buildDeepgramParams: явный язык, без спикеров/чисе
   assert.equal(p.get('detect_language'), null);
   assert.equal(p.get('diarize_model'), null);
   assert.equal(p.get('numerals'), null);
+});
+
+test('opusEncodeArgs: hq (диаризация) — 96k, без принудительного mono', () => {
+  const hq = opusEncodeArgs(true);
+  assert.match(hq, /-b:a 96k/);
+  assert.doesNotMatch(hq, /-ac 1/);   // каналы сохраняем
+});
+
+test('opusEncodeArgs: обычный — 32k mono', () => {
+  const lo = opusEncodeArgs(false);
+  assert.match(lo, /-b:a 32k/);
+  assert.match(lo, /-ac 1/);
 });

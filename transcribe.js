@@ -120,17 +120,27 @@ function downloadAudio(url, tmp) {
   return join(tmp, f);
 }
 
-function convertToOpus(input, tmp) {
+// Аудио-аргументы ffmpeg для opus.
+//  - обычный режим: 32 kbps mono voip — для распознавания СЛОВ хватает с запасом,
+//    файл ~в 8× меньше WAV (115 MB/ч → 14 MB/ч), аплоад быстрый.
+//  - hq (диаризация): 96 kbps + сохраняем каналы (не mono). Диаризация v2 строит
+//    голосовые эмбеддинги по тонким спектральным признакам; на 32k mono у тихих/
+//    редко говорящих спикеров они теряются и Deepgram их сливает. 96k их сохраняет
+//    (~42 MB/ч — всё ещё компактно). У Deepgram нет подсказки числа спикеров, так что
+//    качество аудио — единственный рычаг.
+export function opusEncodeArgs(hq) {
+  return hq
+    ? '-c:a libopus -b:a 96k -ar 16000 -application audio'
+    : '-c:a libopus -b:a 32k -ar 16000 -ac 1 -application voip';
+}
+
+function convertToOpus(input, tmp, { hq = false } = {}) {
   const hint = platform() === 'darwin' ? 'brew install ffmpeg' : 'choco install ffmpeg';
   if (!checkBin('ffmpeg', hint)) process.exit(1);
   const out = join(tmp, 'converted.opus');
   try {
-    // libopus 32 kbps mono 16 kHz в режиме voip: для речи Deepgram распознаёт
-    // один в один с WAV PCM, файл ~в 8× меньше (115 MB/час → 14 MB/час), аплоад
-    // секунды вместо минут — fetch timeout на длинных Meet'ах физически исключён.
     execSync(
-      `ffmpeg -i "${input}" -vn -c:a libopus -b:a 32k -ar 16000 -ac 1 ` +
-      `-application voip -y -loglevel error "${out}"`,
+      `ffmpeg -i "${input}" -vn ${opusEncodeArgs(hq)} -y -loglevel error "${out}"`,
       { stdio: ['pipe', 'pipe', 'pipe'], timeout: 20*60000 }
     );
   } catch (e) {
@@ -322,7 +332,8 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
 
     if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
       spinner.text = chalk.cyan('Конвертирую аудио в opus...');
-      audioPath = convertToOpus(audioPath, tmp);
+      // hq при диаризации: выше битрейт + сохраняем каналы, иначе тихих спикеров сольёт.
+      audioPath = convertToOpus(audioPath, tmp, { hq: speakers });
       spinner.succeed('Сконвертировано в opus');
       spinner.start();
     }
