@@ -26,6 +26,11 @@ const DEFAULTS = {
   lastOpenDir: '',
   apiKey: '',
   speakerNames: [],
+  // Авто-саммари через OpenRouter (Round 2). Выкл по умолчанию;
+  // включается в Настройках и тогда работает автоматически.
+  summaryEnabled: false,
+  openrouterKey: '',
+  summaryModel: 'qwen/qwen3-8b:free',
 };
 
 export function loadConfig() {

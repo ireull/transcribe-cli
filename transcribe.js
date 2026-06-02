@@ -211,7 +211,7 @@ export function formatTs(sec) {
     : `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
 }
 
-function formatMarkdown(data, speakers, title = '', speakerNames = {}, merge = true) {
+function formatMarkdown(data, speakers, title = '', speakerNames = {}, merge = true, summary = '') {
   const lines = [];
   if (title) lines.push(`# ${title}`, '');
 
@@ -222,6 +222,8 @@ function formatMarkdown(data, speakers, title = '', speakerNames = {}, merge = t
     const m = Math.floor(s / 60); s %= 60;
     lines.push(`> Длительность: ${h ? h + ':' + String(m).padStart(2,'0') : m}:${String(s).padStart(2,'0')}`, '');
   }
+
+  if (summary) lines.push('## Краткое содержание', '', summary.trim(), '');
 
   const results = data?.results || {};
 
@@ -282,7 +284,7 @@ export function getSpeakerPreviews(data) {
   return [...seen.entries()].map(([id, lines]) => ({ id, lines }));
 }
 
-export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, model = 'nova-3', apiKey, outputDir, onSpeakers }) {
+export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, model = 'nova-3', apiKey, outputDir, onSpeakers, summarize, name = '', nameIsGeneric = false }) {
   const tmp = makeTmp();
   // Сигналы SIGINT/SIGTERM обрабатываются глобально в makeTmp — он почистит tmp
   // через activeTmpDirs, так что локальный handler больше не нужен.
@@ -309,6 +311,9 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
       spinner.start();
     }
 
+    // Явное имя (напр. почищенное имя записи Meet) перебивает выведенное из источника.
+    if (name) { baseName = sanitizeFilename(name); title = name; }
+
     if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
       spinner.text = chalk.cyan('Конвертирую аудио в opus...');
       audioPath = convertToOpus(audioPath, tmp);
@@ -330,12 +335,34 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
       }
     }
 
+    // Авто-саммари (если включено и передан callback). Транскрипт не теряем:
+    // при любой ошибке саммари просто пропускаем и сохраняем без него.
+    let summaryPara = '';
+    if (summarize) {
+      const llmInput = formatMarkdown(raw, speakers, '', speakerNames, merge);
+      spinner.text = chalk.cyan('Делаю краткое содержание...');
+      spinner.start();
+      try {
+        const s = await summarize(llmInput);
+        summaryPara = s?.paragraph || '';
+        // Имя из саммари берём только когда своего осмысленного нет:
+        // дефолт Meet (nameIsGeneric) или fallback-имя 'transcript'.
+        if (s?.title && (nameIsGeneric || baseName === 'transcript')) {
+          baseName = sanitizeFilename(s.title);
+          title = s.title;
+        }
+        spinner.succeed('Краткое содержание готово');
+      } catch (e) {
+        spinner.fail(chalk.yellow(`Саммари пропущено: ${e.message}`));
+      }
+    }
+
     // Сохранение
     mkdirSync(outputDir, { recursive: true });
     let outPath = join(outputDir, `${baseName}.md`);
     let c = 1;
     while (existsSync(outPath)) { outPath = join(outputDir, `${baseName}_${c++}.md`); }
-    writeFileSync(outPath, formatMarkdown(raw, speakers, title, speakerNames, merge), 'utf-8');
+    writeFileSync(outPath, formatMarkdown(raw, speakers, title, speakerNames, merge, summaryPara), 'utf-8');
 
     // Итог
     const d = raw?.metadata?.duration;

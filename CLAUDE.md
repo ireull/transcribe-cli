@@ -46,7 +46,8 @@ install.bat                      # Windows: то же самое
 
 - [app.js](app.js) — UI, меню, режимы (`runFileMode`, `runBatchMode`, `runUrlMode`, `runMeetMode`), настройки. Весь `@inquirer/prompts` живёт здесь.
 - [transcribe.js](transcribe.js) — **ядро пайплайна**. `runTranscription(source, opts)` — единственная публичная функция, которая знает как скачать/сконвертировать/отправить в Deepgram/записать MD. Остальные модули не должны знать про Deepgram.
-- [gdrive.js](gdrive.js) — Google Drive API и Service Account. Тоже автономен: умеет искать Meet Recordings, скачивать файл, импортировать SA-ключ.
+- [gdrive.js](gdrive.js) — Google Drive API и Service Account. Тоже автономен: умеет искать Meet Recordings, скачивать файл, импортировать SA-ключ, чистить авто-имена Meet (`cleanMeetName`: срезает «– Recording»/таймзоны, нормализует дату, ловит дефолтные коды встреч `xxx-xxxx-xxx`).
+- [summarize.js](summarize.js) — авто-саммари через OpenRouter (OpenAI-совместимый `/chat/completions`). Автономен, как gdrive.js. `summarizeTranscript(text, {apiKey, model})` → `{title, paragraph}`; ретраит 429 с бэкоффом, парсит JSON-ответ модели с фолбэком. Дефолт-модель `qwen/qwen3-8b:free` (русский ок; у Deepgram саммари — только английский). Подключается callback'ом в `runTranscription` (как `onSpeakers`), чтобы ядро не зависело от OpenRouter.
 - [config.js](config.js) — единственный writer `~/.config/transcribe-cli/config.json` (или `$XDG_CONFIG_HOME/transcribe-cli/` если задан). Любое изменение настроек идёт через `loadConfig`/`saveConfig`. Экспортирует `CONFIG_DIR` — все остальные модули, которым нужен путь к пользовательским данным, импортируют его отсюда, а не считают свой.
 - [dialogs.js](dialogs.js) — нативная интеграция с ОС. File picker'ы через `osascript` (macOS) и `powershell` (Windows); Linux для пикеров не поддерживается — возвращает `null`. Плюс `openFile`/`revealFile`/`copyToClipboard` для post-action меню (open/reveal/буфер) — через `execFileSync` с **массивом** аргументов (не строкой), чтобы пути с пробелами/кириллицей не требовали экранирования. На Linux эти три — best-effort (`xdg-open`/`xclip`/`xsel`).
 - [shortcut.js](shortcut.js) — создание ярлыка на рабочем столе (`.command`/`.lnk`+`.bat`/`.desktop`).
@@ -64,7 +65,8 @@ install.bat                      # Windows: то же самое
 5. Результат форматируется в Markdown. Два режима вывода:
    - `speakers=true` → блоки `**Name** [ts]` по `results.utterances`. При `merge=true` (дефолт) подряд идущие реплики одного спикера склеиваются в один блок (таймстамп — от первой); при `merge=false` — по одной.
    - иначе → параграфы из `results.channels[0].alternatives[0].paragraphs`
-6. Если имя файла уже существует в `outputDir`, добавляется суффикс `_1`, `_2` ... (не перезаписываем).
+6. Если задан callback `summarize` (вкл в Настройках + есть ключ OpenRouter), перед записью добавляется блок «## Краткое содержание». Имя файла берётся из саммари **только** если своего осмысленного нет — `nameIsGeneric` (дефолтный код Meet) или fallback `transcript`. Любая ошибка саммари не роняет транскрипт — сохраняем без него.
+7. Если имя файла уже существует в `outputDir`, добавляется суффикс `_1`, `_2` ... (не перезаписываем).
 
 ### Переименование спикеров — двухфазный flow
 

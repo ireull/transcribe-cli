@@ -199,3 +199,46 @@ export function formatDate(dateStr) {
   const d = new Date(dateStr);
   return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
+
+/**
+ * Чистит авто-имя записи Google Meet до «Ядро — YYYY-MM-DD».
+ * Срезает «– Recording N», таймзоны/время, нормализует дату.
+ * Определяет «дефолтные» имена (код встречи xxx-xxxx-xxx или пусто) —
+ * для них имя осмысленным не считается (потом возьмём из саммари LLM).
+ *
+ * Возвращает { clean, isGeneric }.
+ *   "Planning & Status check - 2026/06/01 15:30 CEST – Recording 2"
+ *     → { clean: "Planning & Status check — 2026-06-01", isGeneric: false }
+ *   "bbb-tupg-phm (2026-05-26 20:02 GMT+2)"
+ *     → { clean: "Запись — 2026-05-26", isGeneric: true }
+ */
+export function cleanMeetName(raw) {
+  let s = String(raw || '').trim();
+
+  // 1. Дата в любом из распространённых форматов → YYYY-MM-DD.
+  let date = '';
+  const md = s.match(/(\d{4})[/.-](\d{2})[/.-](\d{2})/);
+  if (md) date = `${md[1]}-${md[2]}-${md[3]}`;
+
+  // 2. Хвост «– Recording», «- Recording 2», «(Recording)».
+  s = s.replace(/[\s\-–—]*\(?\bRecording\b\s*\d*\)?\s*$/i, '');
+  // 3. Скобки с датой/временем/таймзоной (но не «(Имя Фамилия)»).
+  s = s.replace(/\(\s*\d{4}[/.-]\d{2}[/.-]\d{2}[^)]*\)/g, '');
+  // 4. Хвост « - 2026/06/01 15:30 CEST» (всё от даты после тире).
+  s = s.replace(/[\s\-–—]+\d{4}[/.-]\d{2}[/.-]\d{2}.*$/i, '');
+  // 5. Остатки времени и таймзон.
+  s = s.replace(/\b\d{1,2}:\d{2}\b/g, '')
+       .replace(/\b(CEST|CET|GMT|UTC|MSK|EST|EDT|PST|PDT)([+-]\d{1,2})?\b/gi, '');
+
+  const core = s.replace(/\s{2,}/g, ' ').replace(/[\s\-–—]+$/, '').trim();
+
+  // Код встречи Google Meet: xxx-xxxx-xxx.
+  const isCode = /^[a-z]{3}-[a-z]{4}-[a-z]{3}$/i.test(core);
+  const isGeneric = !core || isCode;
+
+  const clean = isGeneric
+    ? (date ? `Запись — ${date}` : 'Запись')
+    : (date ? `${core} — ${date}` : core);
+
+  return { clean, isGeneric };
+}

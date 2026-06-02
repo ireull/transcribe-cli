@@ -10,8 +10,16 @@ import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
 import { pickFile, pickFiles, pickFolder, pickJsonFile, openFile, revealFile, copyToClipboard } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
-import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate } from './gdrive.js';
+import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, cleanMeetName } from './gdrive.js';
+import { summarizeTranscript } from './summarize.js';
 import { runUpgrade } from './upgrade.js';
+
+// Callback саммари для runTranscription. undefined, если фича выключена или нет ключа —
+// тогда транскрипция идёт как раньше, без обращения к OpenRouter.
+function buildSummarizeCb(cfg) {
+  if (!cfg.summaryEnabled || !cfg.openrouterKey) return undefined;
+  return (text) => summarizeTranscript(text, { apiKey: cfg.openrouterKey, model: cfg.summaryModel });
+}
 
 // ─── Переименование спикеров ────────────────────────────────────────
 
@@ -389,6 +397,10 @@ async function runMeetMode(apiKey, cfg) {
 
   // Опции транскрипции
   const opts = await askOptions(cfg);
+  opts.summarize = buildSummarizeCb(cfg);
+  // Чистим авто-имя Meet; если оно дефолтное (код встречи) — имя возьмётся из саммари.
+  const { clean, isGeneric } = cleanMeetName(selectedFile.name);
+  opts.name = clean; opts.nameIsGeneric = isGeneric;
 
   // Куда сохранить
   const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir(), 'Домашняя папка');
@@ -457,6 +469,56 @@ async function editSpeakerNames(cfg) {
   }
 }
 
+// ─── Настройки авто-саммари ──────────────────────────────────────────
+
+async function editSummarySettings(cfg) {
+  while (true) {
+    console.log();
+    console.log(chalk.cyan('  Авто-саммари (OpenRouter):'));
+    console.log(`    Статус: ${cfg.summaryEnabled ? chalk.green('вкл') : chalk.dim('выкл')}`);
+    console.log(`    Ключ:   ${cfg.openrouterKey ? chalk.green('✓ задан') : chalk.red('✗ нет')}`);
+    console.log(`    Модель: ${cfg.summaryModel || 'qwen/qwen3-8b:free'}`);
+    console.log(chalk.dim('    Ключ бесплатно: https://openrouter.ai/keys'));
+    console.log();
+
+    const action = await select({
+      message: 'Авто-саммари',
+      choices: [
+        { name: cfg.summaryEnabled ? '🔕  Выключить' : '🔔  Включить', value: 'toggle' },
+        { name: '🔑  Ключ OpenRouter', value: 'key' },
+        { name: '🤖  Модель', value: 'model' },
+        { name: '↩️   Назад', value: 'back' },
+      ],
+    });
+    if (action === 'back') break;
+
+    if (action === 'toggle') {
+      if (!cfg.summaryEnabled && !cfg.openrouterKey) {
+        console.log(chalk.yellow('  Сначала задайте ключ OpenRouter.'));
+      } else {
+        cfg.summaryEnabled = !cfg.summaryEnabled; saveConfig(cfg);
+        console.log(chalk.green(`  ${cfg.summaryEnabled ? 'Включено' : 'Выключено'}.`));
+      }
+    } else if (action === 'key') {
+      const k = await input({ message: 'Ключ OpenRouter (sk-or-...):' });
+      if (k.trim()) { cfg.openrouterKey = k.trim(); saveConfig(cfg); console.log(chalk.green('  Сохранено.')); }
+    } else if (action === 'model') {
+      const m = await select({
+        message: 'Модель саммари',
+        choices: [
+          { name: 'qwen/qwen3-8b:free  (быстро, дефолт)', value: 'qwen/qwen3-8b:free' },
+          { name: 'qwen/qwen3-next-80b-a3b-instruct:free  (качественнее)', value: 'qwen/qwen3-next-80b-a3b-instruct:free' },
+          { name: chalk.dim('Ввести вручную...'), value: '__custom__' },
+        ],
+        default: cfg.summaryModel || 'qwen/qwen3-8b:free',
+      });
+      let model = m;
+      if (m === '__custom__') model = (await input({ message: 'Слаг модели OpenRouter:', default: cfg.summaryModel || 'qwen/qwen3-8b:free' })).trim();
+      if (model) { cfg.summaryModel = model; saveConfig(cfg); console.log(chalk.green(`  Модель: ${model}`)); }
+    }
+  }
+}
+
 // ─── Настройки ──────────────────────────────────────────────────────
 
 async function editSettings(cfg) {
@@ -468,6 +530,7 @@ async function editSettings(cfg) {
       { name: '🔑  Изменить API-ключ Deepgram', value: 'key' },
       { name: hasSaKey() ? '🔄  Заменить SA-ключ Google Drive' : '📂  Добавить SA-ключ Google Drive', value: 'sa' },
       { name: `👤  Список спикеров (${(cfg.speakerNames||[]).length})`, value: 'speakers-list' },
+      { name: `🧠  Авто-саммари (${cfg.summaryEnabled ? 'вкл' : 'выкл'})`, value: 'summary' },
       { name: '📂  Сменить папку', value: 'dir' },
       { name: hasShortcut ? '🗑️   Удалить ярлык' : '🖥️   Добавить ярлык', value: 'shortcut' },
       { name: '🔄  Обновить transcribe до последней версии', value: 'upgrade' },
@@ -495,6 +558,8 @@ async function editSettings(cfg) {
     }
   } else if (action === 'speakers-list') {
     await editSpeakerNames(cfg);
+  } else if (action === 'summary') {
+    await editSummarySettings(cfg);
   } else if (action === 'dir') {
     console.log(chalk.dim('  Открываю диалог...'));
     const p = pickFolder(cfg.lastOutputDir || '');
@@ -518,6 +583,7 @@ async function editSettings(cfg) {
     console.log(chalk.cyan('  │') + ` Папка:     ${cfg.lastOutputDir||chalk.dim('рядом с файлом')}`);
     console.log(chalk.cyan('  │') + ` Ярлык:     ${shortcutExists()?chalk.green('✓ есть'):chalk.dim('нет')}`);
     console.log(chalk.cyan('  │') + ` SA-ключ Google Drive:   ${hasSaKey()?chalk.green('✓')+' '+getSaKeyPath():chalk.dim('нет')}`);
+    console.log(chalk.cyan('  │') + ` Авто-саммари: ${cfg.summaryEnabled?chalk.green('✓ вкл')+chalk.dim(' '+(cfg.summaryModel||'')):chalk.dim('выкл')}${cfg.summaryEnabled&&!cfg.openrouterKey?chalk.red(' (нет ключа!)'):''}`);
     console.log(chalk.cyan('  │') + ` ffmpeg:    ${has('ffmpeg')?chalk.green('✓'):chalk.red('✗')}`);
     console.log(chalk.cyan('  │') + ` yt-dlp:    ${has('yt-dlp')?chalk.green('✓'):chalk.red('✗')}`);
     console.log(chalk.cyan('  │') + ` Конфиг:    ${CONFIG_PATH}`);
@@ -556,6 +622,7 @@ async function interactiveMenu() {
         await runMeetMode(apiKey, cfg);
       } else {
         const opts = await askOptions(cfg);
+        opts.summarize = buildSummarizeCb(cfg);
         if (mode === 'file') await runFileMode(apiKey, opts, cfg);
         else if (mode === 'batch') await runBatchMode(apiKey, opts, cfg);
         else if (mode === 'url') await runUrlMode(apiKey, opts, cfg);
