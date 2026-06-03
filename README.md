@@ -63,33 +63,34 @@ brew install yt-dlp
 ### Одной командой (рекомендуется)
 
 ```bash
-npm install -g git+https://github.com/ireull/transcribe-cli.git
+npm install -g @ireull/transcribe-cli
 ```
 
-Работает на macOS, Linux и Windows одинаково.
+Работает на macOS, Linux и Windows одинаково. Ничего клонировать не нужно —
+npm сам скачает пакет из реестра и поставит команду `transcribe` глобально.
 
 Если получите `EACCES` — запустите с `sudo` (macOS/Linux) или из консоли
 с правами администратора (Windows).
 
-### Из клона (альтернатива)
+### Прямо из GitHub (без npm-реестра)
 
-Если уже склонировали репозиторий локально и хотите собирать из исходников:
+Тот же результат, минуя реестр (ставит из git напрямую):
 
-**macOS / Linux:**
+```bash
+npm install -g git+https://github.com/ireull/transcribe-cli.git
+```
+
+### Из клона (для разработки)
+
+Если склонировали репозиторий и хотите поставить свою локальную сборку:
+
 ```bash
 cd transcribe-cli
-chmod +x install.sh
-./install.sh
+npm i -g .
 ```
 
-**Windows:**
-```bat
-cd transcribe-cli
-install.bat
-```
-
-После установки команда `transcribe` доступна из любого терминала.
-Папку с исходниками можно удалить.
+Команда `transcribe` станет доступна из любого терминала — одинаково на macOS,
+Linux и Windows. Папку с исходниками можно удалить.
 
 ---
 

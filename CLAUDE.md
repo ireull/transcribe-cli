@@ -9,8 +9,7 @@ node cli.js                      # запуск из исходников (ин�
 node cli.js <file-or-url>        # быстрый режим без меню
 node cli.js <src> -l en -s -o ./out   # флаги: язык, спикеры, папка вывода
 
-./install.sh                     # macOS/Linux: npm install -g .
-install.bat                      # Windows: то же самое
+npm i -g .                       # поставить локальную сборку глобально (из клона)
 ```
 
 Юнит-тесты — `npm test` (встроенный `node --test`, без зависимостей; файлы в [test/](test/)). Покрыта чистая логика: `formatMarkdown` (склейка/саммари), `buildDeepgramParams`, `cleanMeetName`, `parseSummary`, `summarizeTranscript` (через мок `fetch`), merge конфига. Линтера нет.
@@ -55,7 +54,6 @@ install.bat                      # Windows: то же самое
 - [dialogs.js](dialogs.js) — нативная интеграция с ОС. File picker'ы через `osascript` (macOS) и `powershell` (Windows); Linux для пикеров не поддерживается — возвращает `null`. Плюс `openFile`/`revealFile`/`copyToClipboard` для post-action меню (open/reveal/буфер) — через `execFileSync` с **массивом** аргументов (не строкой), чтобы пути с пробелами/кириллицей не требовали экранирования. На Linux эти три — best-effort (`xdg-open`/`xclip`/`xsel`).
 - [shortcut.js](shortcut.js) — создание ярлыка на рабочем столе (`.command`/`.lnk`+`.bat`/`.desktop`).
 - [upgrade.js](upgrade.js) — `transcribe upgrade`: `npm install -g git+<url>`, см. раздел "Самообновление".
-- [postinstall.js](postinstall.js) — запускается через `scripts.postinstall` в [package.json](package.json). При `npm i -g` копирует `service-account.json` из `INIT_CWD` в папку установки пакета, если он там лежит.
 
 ### Пайплайн транскрипции ([transcribe.js:204](transcribe.js#L204))
 
@@ -87,7 +85,7 @@ install.bat                      # Windows: то же самое
 
 `CONFIG_DIR` вычисляется в [config.js](config.js) и экспортируется — [gdrive.js](gdrive.js) импортирует его оттуда, а не дублирует логику вычисления. Это **единственное место** где определяется путь к пользовательским данным.
 
-Директория намеренно не внутри `node_modules` — переживает `npm update -g` и переустановку. `postinstall.js` туда ничего не пишет.
+Директория намеренно не внутри `node_modules` — переживает `npm update -g` и переустановку.
 
 **Миграции со старого `~/.transcribe/` нет** — при переходе на версию с XDG-путями пользователь руками переносит (или пересоздаёт) config. Решение осознанное: автомиграция добавляет код ради одноразового события.
 
@@ -132,18 +130,18 @@ install.bat                      # Windows: то же самое
 
 ### Самообновление (`transcribe upgrade`)
 
-Ключевой принцип: **локальный git clone не требуется**. Типичный воркфлоу пользователя — `npm install -g git+https://github.com/ireull/transcribe-cli.git` (или через `install.sh` из клона, который он тут же удаляет). Upgrade должен работать без исходной папки.
+Ключевой принцип: **локальный git clone не требуется**. Типичный воркфлоу пользователя — `npm install -g @ireull/transcribe-cli` (или `git+https://github.com/ireull/transcribe-cli.git`). Upgrade должен работать без исходной папки.
 
 Механизм:
 
 1. Upgrade читает `repository.url` из своего же `package.json` (лежит рядом с `upgrade.js` в папке глобальной установки, доступен через `import.meta.url`).
 2. Делает `fetch https://raw.githubusercontent.com/<user>/<repo>/master/package.json` (fallback `main`) — сравнивает `version` с установленной. Если совпадает — ранний выход без запуска `npm` (экономит ~20 секунд). Работает только для public-репо; если репо сделают приватным, fetch вернёт 404, и мы просто провалимся в install.
-3. Если версии разные (или проверка не сработала) — `execSync('npm install -g git+https://github.com/.../transcribe-cli.git')`. npm сам клонирует в temp, ставит зависимости, вызывает postinstall и устанавливает глобально. Temp чистится npm-ом.
+3. Если версии разные (или проверка не сработала) — `execSync('npm install -g git+https://github.com/.../transcribe-cli.git')`. npm сам клонирует в temp, ставит зависимости и устанавливает глобально. Temp чистится npm-ом.
 4. После install перечитывает `package.json` с того же пути — файл уже заменён, возвращает новую версию. Показывает пользователю `старая → новая`.
 
 **Репо публичное**, поэтому:
 - В [package.json](package.json) URL формата `git+https://github.com/...`. Никаких SSH-ключей на машине пользователя не нужно — работает из коробки на любой машине с Node и git.
-- Первичная установка — `npm install -g git+https://github.com/ireull/transcribe-cli.git` одной строкой. `install.sh`/`install.bat` остаются как альтернатива для тех, кто уже склонировал репо.
+- Первичная установка — `npm install -g @ireull/transcribe-cli` (или `git+https://github.com/ireull/transcribe-cli.git`). Из клона для разработки — `npm i -g .` в папке репозитория.
 
 **[package.json](package.json) обязан содержать поле `repository.url`** — иначе upgrade не знает, откуда качать. Также **версия должна бампаться на каждом релизе** (см. раздел "Рабочий процесс"), иначе проверка через raw.githubusercontent.com покажет "уже последняя" и реальное обновление не запустится.
 
