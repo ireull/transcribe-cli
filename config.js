@@ -35,6 +35,10 @@ const DEFAULTS = {
   // транскрипт+спикеры в одном вызове, можно задать число спикеров).
   provider: 'deepgram',
   assemblyKey: '',
+  // Переименовывать исходную запись на Google Drive в имя транскрипта
+  // (только для generic-имён — кодов встреч). Требует Editor-доступа SA
+  // и спрашивает подтверждение перед каждым переименованием. По умолчанию выкл.
+  renameDriveSource: false,
 };
 
 export function loadConfig() {

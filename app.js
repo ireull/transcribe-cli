@@ -10,7 +10,7 @@ import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
 import { pickFile, pickFiles, pickFolder, pickJsonFile, openFile, revealFile, copyToClipboard } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
-import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, cleanMeetName } from './gdrive.js';
+import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, cleanMeetName, renameDriveFile, driveRenameTarget } from './gdrive.js';
 import { summarizeTranscript } from './summarize.js';
 import { runUpgrade } from './upgrade.js';
 
@@ -315,6 +315,27 @@ async function runUrlMode(apiKey, opts, cfg) {
   return out;
 }
 
+// Переименование исходной записи на Google Drive в имя транскрипта.
+// Срабатывает только для generic-записей (коды встреч) и только с подтверждения.
+// Имя берём из готового .md (basename без расширения и без коллизийного _N).
+async function maybeRenameDriveSource(drive, file, outPath) {
+  const target = driveRenameTarget(outPath, file.name);
+  if (!target) return; // имя бессмысленное (саммари выкл) или уже совпадает
+
+  console.log();
+  console.log(chalk.cyan(`  Запись на Диске: ${file.name}`));
+  if (!(await yesNo(`Переименовать её в «${target}»?`, true))) return;
+
+  const sp = ora({ text: chalk.cyan('Переименовываю на Google Drive...'), spinner: 'dots' }).start();
+  try {
+    await renameDriveFile(drive, file.id, target);
+    sp.succeed(`Переименовано на Диске: ${target}`);
+  } catch (e) {
+    sp.fail(chalk.yellow(`Не удалось переименовать на Диске: ${e.message}`));
+    console.log(chalk.dim('  Нужен доступ «Редактор» у service-account на эту запись (не «Просмотр»).'));
+  }
+}
+
 async function runMeetMode(apiKey, cfg) {
   // Проверка SA-ключа — если нет, предлагаем импортировать
   if (!hasSaKey()) {
@@ -372,7 +393,7 @@ async function runMeetMode(apiKey, cfg) {
 
   let drive, files;
   try {
-    ({ drive, files } = await getMeetRecordings());
+    ({ drive, files } = await getMeetRecordings({ write: cfg.renameDriveSource }));
     spinner.succeed(`Найдено записей: ${files.length}`);
   } catch (e) {
     spinner.fail(chalk.red(`Ошибка: ${e.message}`));
@@ -440,7 +461,10 @@ async function runMeetMode(apiKey, cfg) {
     const filePath = await downloadFile(drive, selectedFile.id, selectedFile.name, tmpDir);
     console.log();
     out = await runTranscription(filePath, { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
-    if (out) await offerPostActions(out);
+    if (out) {
+      if (cfg.renameDriveSource && isGeneric) await maybeRenameDriveSource(drive, selectedFile, out);
+      await offerPostActions(out);
+    }
   } catch (e) {
     console.log(chalk.red(`  Ошибка: ${e.message}`));
   } finally {
@@ -586,6 +610,22 @@ async function editProviderSettings(cfg) {
   }
 }
 
+// ─── Переименование записей Meet на Диске ───────────────────────────
+async function editRenameDriveSetting(cfg) {
+  console.log();
+  console.log(chalk.dim('  После транскрипции переименовывает ИСХОДНУЮ запись на Google'));
+  console.log(chalk.dim('  Drive в имя транскрипта — только записи с дефолтным именем'));
+  console.log(chalk.dim('  (код встречи вида abc-defg-hij). Перед каждым — подтверждение.'));
+  console.log(chalk.dim('  Требует доступ «Редактор» у service-account на папку Meet'));
+  console.log(chalk.dim('  Recordings (расшаренная на «Просмотр» — переименовать не даст).'));
+  console.log(chalk.dim('  Лучшие имена выходят при включённом авто-саммари.'));
+  console.log();
+  const on = await yesNo('Включить переименование записей на Диске?', cfg.renameDriveSource);
+  cfg.renameDriveSource = on;
+  saveConfig(cfg);
+  console.log(chalk.green(`  ${on ? 'Включено' : 'Выключено'}.`));
+}
+
 // ─── Настройки ──────────────────────────────────────────────────────
 
 async function editSettings(cfg) {
@@ -599,6 +639,7 @@ async function editSettings(cfg) {
       { name: hasSaKey() ? '🔄  Заменить SA-ключ Google Drive' : '📂  Добавить SA-ключ Google Drive', value: 'sa' },
       { name: `👤  Список спикеров (${(cfg.speakerNames||[]).length})`, value: 'speakers-list' },
       { name: `🧠  Авто-саммари (${cfg.summaryEnabled ? 'вкл' : 'выкл'})`, value: 'summary' },
+      { name: `📛  Переименовывать запись Meet на Диске (${cfg.renameDriveSource ? 'вкл' : 'выкл'})`, value: 'rename-drive' },
       { name: '📂  Сменить папку', value: 'dir' },
       { name: hasShortcut ? '🗑️   Удалить ярлык' : '🖥️   Добавить ярлык', value: 'shortcut' },
       { name: '🔄  Обновить transcribe до последней версии', value: 'upgrade' },
@@ -630,6 +671,8 @@ async function editSettings(cfg) {
     await editSummarySettings(cfg);
   } else if (action === 'provider') {
     await editProviderSettings(cfg);
+  } else if (action === 'rename-drive') {
+    await editRenameDriveSetting(cfg);
   } else if (action === 'dir') {
     console.log(chalk.dim('  Открываю диалог...'));
     const p = pickFolder(cfg.lastOutputDir || '');

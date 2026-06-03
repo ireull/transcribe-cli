@@ -1,7 +1,7 @@
 import { drive as driveApi } from '@googleapis/drive';
 import { GoogleAuth } from 'google-auth-library';
 import { createWriteStream, existsSync, readFileSync, copyFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, basename } from 'path';
 import chalk from 'chalk';
 import ora from 'ora';
 import { sanitizeFilename } from './transcribe.js';
@@ -47,7 +47,7 @@ export function importSaKey(sourcePath) {
 /**
  * Создает авторизованный Drive-клиент.
  */
-function getDriveClient() {
+function getDriveClient(write = false) {
   if (!existsSync(SA_KEY_PATH)) {
     throw new Error(
       `SA-ключ не найден: ${SA_KEY_PATH}\n` +
@@ -58,7 +58,11 @@ function getDriveClient() {
   const key = JSON.parse(readFileSync(SA_KEY_PATH, 'utf-8'));
   const auth = new GoogleAuth({
     credentials: key,
-    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    // По умолчанию readonly; полный `drive` (read+write) запрашиваем только
+    // когда нужна запись — переименование исходника. Least privilege.
+    scopes: [write
+      ? 'https://www.googleapis.com/auth/drive'
+      : 'https://www.googleapis.com/auth/drive.readonly'],
   });
 
   return driveApi({ version: 'v3', auth });
@@ -164,8 +168,8 @@ export async function downloadFile(drive, fileId, fileName, destDir) {
  * Главная функция — получает Drive-клиент и список записей.
  * Возвращает { drive, files } или null при ошибке.
  */
-export async function getMeetRecordings(limit = 500) {
-  const drive = getDriveClient();
+export async function getMeetRecordings({ limit = 500, write = false } = {}) {
+  const drive = getDriveClient(write);
 
   // Сначала ищем папку Meet Recordings
   const folders = await findMeetFolder(drive);
@@ -180,6 +184,38 @@ export async function getMeetRecordings(limit = 500) {
   }
 
   return { drive, files };
+}
+
+/**
+ * Переименовывает файл на Google Drive (metadata-only update — контент не
+ * трогается). Требует write-scope у клиента (getDriveClient(true)) и доступа
+ * «Редактор» у SA к файлу; иначе Drive вернёт 403 — вызывающий ловит ошибку.
+ */
+export async function renameDriveFile(drive, fileId, newName) {
+  await drive.files.update({
+    fileId,
+    requestBody: { name: newName },
+    supportsAllDrives: true,
+  });
+}
+
+/**
+ * Вычисляет имя для переименования исходника на Диске — или `null`, если
+ * переименовывать не нужно. Берём ровно имя выходного `.md` (то, что увидел
+ * пользователь, включая коллизийный суффикс `_N` — ничего не режем). Возвращаем
+ * `null`, когда имя бессмысленное: fallback `transcript` или дефолт
+ * «Запись[ — дата]» (саммари выкл/упало — переименовывать код в код не нужно),
+ * либо когда имя уже совпадает с текущим. Сохраняем исходное медиа-расширение,
+ * если оно реально было (regex заякорен на `$` и на whitelist — точки в датах
+ * вида `2026.05.26` за расширение не принимаются).
+ */
+export function driveRenameTarget(outPath, originalName) {
+  const newBase = basename(outPath, '.md');
+  if (!newBase || newBase === 'transcript' || /^Запись( —|$)/.test(newBase)) return null;
+  const m = (originalName || '').match(/\.(mp4|mkv|webm|mov|avi|m4a|mp3|wav|ogg|flac)$/i);
+  const ext = m ? m[0] : '';
+  const target = ext && !newBase.toLowerCase().endsWith(ext.toLowerCase()) ? `${newBase}${ext}` : newBase;
+  return target === originalName ? null : target;
 }
 
 /**
