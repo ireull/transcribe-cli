@@ -5,6 +5,7 @@ import { join, basename, extname } from 'path';
 import { randomBytes } from 'crypto';
 import chalk from 'chalk';
 import ora from 'ora';
+import { transcribeAssembly } from './assembly.js';
 
 const DEEPGRAM_API = 'https://api.deepgram.com/v1/listen';
 const DIRECT_AUDIO = new Set(['.wav', '.mp3', '.ogg', '.flac', '.m4a', '.opus', '.webm']);
@@ -301,7 +302,7 @@ export function getSpeakerPreviews(data) {
   return [...seen.entries()].map(([id, lines]) => ({ id, lines }));
 }
 
-export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, model = 'nova-3', apiKey, outputDir, onSpeakers, summarize, name = '', nameIsGeneric = false }) {
+export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, numSpeakers = 0, onDiarCount, provider = 'deepgram', assemblyKey, model = 'nova-3', apiKey, outputDir, onSpeakers, summarize, name = '', nameIsGeneric = false }) {
   const tmp = makeTmp();
   // Сигналы SIGINT/SIGTERM обрабатываются глобально в makeTmp — он почистит tmp
   // через activeTmpDirs, так что локальный handler больше не нужен.
@@ -331,18 +332,42 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
     // Явное имя (напр. почищенное имя записи Meet) перебивает выведенное из источника.
     if (name) { baseName = sanitizeFilename(name); title = name; }
 
+    // AssemblyAI всегда отдаёт спикеров — для него рендерим в режиме спикеров.
+    if (provider === 'assembly') speakers = true;
+
     if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
       spinner.text = chalk.cyan('Конвертирую аудио в opus...');
-      // hq при диаризации: выше битрейт + сохраняем каналы, иначе тихих спикеров сольёт.
+      // hq (битрейт + каналы) для облачной диаризации: выше битрейт = точнее спикеры.
       audioPath = convertToOpus(audioPath, tmp, { hq: speakers });
       spinner.succeed('Сконвертировано в opus');
       spinner.start();
     }
 
-    const mb = (statSync(audioPath).size / 1048576).toFixed(1);
-    spinner.text = chalk.cyan(`Транскрибирую (${mb} MB)...`);
-    const raw = await callDeepgram(audioPath, { model, lang, autoLang, speakers, numerals, apiKey });
-    spinner.succeed('Транскрибировано');
+    let raw;
+    if (provider === 'assembly') {
+      // AssemblyAI: транскрипт + диаризация в одном вызове. Цикл числа спикеров:
+      // показали → не то → пересчитали со speakers_expected.
+      let forceN = numSpeakers, result;
+      while (true) {
+        spinner.text = chalk.cyan(forceN > 0 ? `AssemblyAI (${forceN} спикеров)...` : 'AssemblyAI (транскрипт + спикеры)...');
+        spinner.start();
+        result = await transcribeAssembly(audioPath, {
+          apiKey: assemblyKey, lang: autoLang ? 'ru' : lang, speakersExpected: forceN,
+          log: m => { spinner.text = chalk.cyan(`AssemblyAI: ${m}`); },
+        });
+        spinner.succeed(`AssemblyAI: ${result.speakers} спикеров`);
+        if (!onDiarCount) break;
+        const want = await onDiarCount(result.speakers);
+        if (!want || want === result.speakers) break;
+        forceN = want;
+      }
+      raw = { metadata: { duration: result.duration }, results: { utterances: result.utterances } };
+    } else {
+      const mb = (statSync(audioPath).size / 1048576).toFixed(1);
+      spinner.text = chalk.cyan(`Транскрибирую (${mb} MB)...`);
+      raw = await callDeepgram(audioPath, { model, lang, autoLang, speakers, numerals, apiKey });
+      spinner.succeed('Транскрибировано');
+    }
 
     // Переименование спикеров
     let speakerNames = {};

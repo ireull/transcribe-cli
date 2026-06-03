@@ -26,17 +26,27 @@ const DEFAULTS = {
   lastOpenDir: '',
   apiKey: '',
   speakerNames: [],
-  // Авто-саммари через OpenRouter (Round 2). Выкл по умолчанию;
+  // Авто-саммари через Google Gemini (free-tier). Выкл по умолчанию;
   // включается в Настройках и тогда работает автоматически.
   summaryEnabled: false,
-  openrouterKey: '',
-  summaryModel: 'qwen/qwen3-8b:free',
+  geminiKey: '',
+  summaryModel: 'gemini-3.5-flash',
+  // Провайдер транскрипции: deepgram (дефолт) или assembly (AssemblyAI — облако,
+  // транскрипт+спикеры в одном вызове, можно задать число спикеров).
+  provider: 'deepgram',
+  assemblyKey: '',
 };
 
 export function loadConfig() {
   try {
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
-    return { ...DEFAULTS, ...JSON.parse(raw) };
+    const cfg = { ...DEFAULTS, ...JSON.parse(raw) };
+    // Миграция: саммари переехало с OpenRouter на Gemini — старый слаг модели
+    // (вида "qwen/...:free") на Gemini-эндпоинте даст 404, сбрасываем на дефолт.
+    if (typeof cfg.summaryModel === 'string' && cfg.summaryModel.includes('/')) {
+      cfg.summaryModel = DEFAULTS.summaryModel;
+    }
+    return cfg;
   } catch {
     return { ...DEFAULTS };
   }

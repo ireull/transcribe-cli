@@ -3,3 +3,12 @@ node_modules/
 .DS_Store
 .omc
 codebase.md
+
+# Python (локальная диаризация diar/)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Артефакты ручного теста гибрида (diar/hybrid.mjs)
+*.hybrid.md

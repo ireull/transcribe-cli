@@ -40,7 +40,7 @@ test('summarizeTranscript: слишком короткий текст → бро
 // ─── summarizeTranscript: мок fetch ──────────────────────────────────
 
 const LONG = 'разговор про релиз '.repeat(20);
-const okResp = (content) => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content } }] }) });
+const okResp = (content) => ({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: content }] } }] }) });
 
 test('summarizeTranscript: успешный ответ', async () => {
   const orig = globalThis.fetch;
@@ -81,6 +81,6 @@ test('summarizeTranscript: сетевая ошибка → бросает', asyn
   const orig = globalThis.fetch;
   globalThis.fetch = async () => { throw Object.assign(new Error('fail'), { cause: { code: 'ENOTFOUND' } }); };
   try {
-    await assert.rejects(() => summarizeTranscript(LONG, { apiKey: 'k', retryDelays: [0, 0, 0] }), /OpenRouter|сеть/i);
+    await assert.rejects(() => summarizeTranscript(LONG, { apiKey: 'k', retryDelays: [0, 0, 0] }), /Gemini|сеть/i);
   } finally { globalThis.fetch = orig; }
 });

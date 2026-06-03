@@ -19,10 +19,10 @@ import { runUpgrade } from './upgrade.js';
 const isExitPrompt = (e) => !!e && (e.name === 'ExitPromptError' || /force closed/i.test(e.message || ''));
 
 // Callback саммари для runTranscription. undefined, если фича выключена или нет ключа —
-// тогда транскрипция идёт как раньше, без обращения к OpenRouter.
+// тогда транскрипция идёт как раньше, без обращения к Gemini.
 function buildSummarizeCb(cfg) {
-  if (!cfg.summaryEnabled || !cfg.openrouterKey) return undefined;
-  return (text) => summarizeTranscript(text, { apiKey: cfg.openrouterKey, model: cfg.summaryModel });
+  if (!cfg.summaryEnabled || !cfg.geminiKey) return undefined;
+  return (text) => summarizeTranscript(text, { apiKey: cfg.geminiKey, model: cfg.summaryModel });
 }
 
 // ─── Переименование спикеров ────────────────────────────────────────
@@ -69,6 +69,23 @@ async function askSpeakerNames(previews) {
     }
   }
   return names;
+}
+
+// ─── Подтверждение числа спикеров (локальная диаризация) ────────────
+
+// Показывает, сколько спикеров поймала диаризация. Если не совпало — просит
+// точное число (диаризация пересчитается с подсказкой). 0/Enter = принять.
+async function askDiarCount(detected) {
+  console.log();
+  console.log(chalk.cyan(`  Найдено спикеров: ${chalk.bold(detected)}`));
+  if (await yesNo('Столько и есть?', true)) return 0;
+  const v = await input({ message: 'Сколько спикеров на самом деле?', default: String(detected) });
+  const n = parseInt(v, 10);
+  if (Number.isFinite(n) && n > 0 && n !== detected) {
+    console.log(chalk.dim(`  Пересчитываю на ${n} (это снова займёт время)...`));
+    return n;
+  }
+  return 0;
 }
 
 // ─── Обработка ошибки ключа Deepgram ────────────────────────────────
@@ -405,6 +422,9 @@ async function runMeetMode(apiKey, cfg) {
   // Опции транскрипции
   const opts = await askOptions(cfg);
   opts.summarize = buildSummarizeCb(cfg);
+  opts.provider = cfg.provider || 'deepgram';
+  opts.assemblyKey = cfg.assemblyKey;
+  opts.onDiarCount = cfg.provider === 'assembly' ? askDiarCount : undefined;
   // Чистим авто-имя Meet; если оно дефолтное (код встречи) — имя возьмётся из саммари.
   const { clean, isGeneric } = cleanMeetName(selectedFile.name);
   opts.name = clean; opts.nameIsGeneric = isGeneric;
@@ -481,20 +501,21 @@ async function editSpeakerNames(cfg) {
 // ─── Настройки авто-саммари ──────────────────────────────────────────
 
 async function editSummarySettings(cfg) {
+  const DEFAULT_MODEL = 'gemini-3.5-flash';
   while (true) {
     console.log();
-    console.log(chalk.cyan('  Авто-саммари (OpenRouter):'));
+    console.log(chalk.cyan('  Авто-саммари (Google Gemini):'));
     console.log(`    Статус: ${cfg.summaryEnabled ? chalk.green('вкл') : chalk.dim('выкл')}`);
-    console.log(`    Ключ:   ${cfg.openrouterKey ? chalk.green('✓ задан') : chalk.red('✗ нет')}`);
-    console.log(`    Модель: ${cfg.summaryModel || 'qwen/qwen3-8b:free'}`);
-    console.log(chalk.dim('    Ключ бесплатно: https://openrouter.ai/keys'));
+    console.log(`    Ключ:   ${cfg.geminiKey ? chalk.green('✓ задан') : chalk.red('✗ нет')}`);
+    console.log(`    Модель: ${cfg.summaryModel || DEFAULT_MODEL}`);
+    console.log(chalk.dim('    Ключ бесплатно (без карты): https://aistudio.google.com/app/apikey'));
     console.log();
 
     const action = await select({
       message: 'Авто-саммари',
       choices: [
         { name: cfg.summaryEnabled ? '🔕  Выключить' : '🔔  Включить', value: 'toggle' },
-        { name: '🔑  Ключ OpenRouter', value: 'key' },
+        { name: '🔑  Ключ Gemini', value: 'key' },
         { name: '🤖  Модель', value: 'model' },
         { name: '↩️   Назад', value: 'back' },
       ],
@@ -502,28 +523,65 @@ async function editSummarySettings(cfg) {
     if (action === 'back') break;
 
     if (action === 'toggle') {
-      if (!cfg.summaryEnabled && !cfg.openrouterKey) {
-        console.log(chalk.yellow('  Сначала задайте ключ OpenRouter.'));
+      if (!cfg.summaryEnabled && !cfg.geminiKey) {
+        console.log(chalk.yellow('  Сначала задайте ключ Gemini.'));
       } else {
         cfg.summaryEnabled = !cfg.summaryEnabled; saveConfig(cfg);
         console.log(chalk.green(`  ${cfg.summaryEnabled ? 'Включено' : 'Выключено'}.`));
       }
     } else if (action === 'key') {
-      const k = await input({ message: 'Ключ OpenRouter (sk-or-...):' });
-      if (k.trim()) { cfg.openrouterKey = k.trim(); saveConfig(cfg); console.log(chalk.green('  Сохранено.')); }
+      const k = await input({ message: 'Ключ Gemini (AIza...):' });
+      if (k.trim()) { cfg.geminiKey = k.trim(); saveConfig(cfg); console.log(chalk.green('  Сохранено.')); }
     } else if (action === 'model') {
       const m = await select({
         message: 'Модель саммари',
         choices: [
-          { name: 'qwen/qwen3-8b:free  (быстро, дефолт)', value: 'qwen/qwen3-8b:free' },
-          { name: 'qwen/qwen3-next-80b-a3b-instruct:free  (качественнее)', value: 'qwen/qwen3-next-80b-a3b-instruct:free' },
+          { name: 'gemini-3.5-flash  (дефолт)', value: 'gemini-3.5-flash' },
+          { name: 'gemini-2.5-flash', value: 'gemini-2.5-flash' },
           { name: chalk.dim('Ввести вручную...'), value: '__custom__' },
         ],
-        default: cfg.summaryModel || 'qwen/qwen3-8b:free',
+        default: cfg.summaryModel || DEFAULT_MODEL,
       });
       let model = m;
-      if (m === '__custom__') model = (await input({ message: 'Слаг модели OpenRouter:', default: cfg.summaryModel || 'qwen/qwen3-8b:free' })).trim();
+      if (m === '__custom__') model = (await input({ message: 'ID модели Gemini:', default: cfg.summaryModel || DEFAULT_MODEL })).trim();
       if (model) { cfg.summaryModel = model; saveConfig(cfg); console.log(chalk.green(`  Модель: ${model}`)); }
+    }
+  }
+}
+
+// ─── Настройки провайдера транскрипции ──────────────────────────────
+
+async function editProviderSettings(cfg) {
+  while (true) {
+    console.log();
+    console.log(chalk.cyan('  Провайдер транскрипции:'));
+    console.log(`    Текущий: ${cfg.provider === 'assembly' ? chalk.bold('AssemblyAI') : chalk.bold('Deepgram')}`);
+    console.log(`    Ключ AssemblyAI: ${cfg.assemblyKey ? chalk.green('✓ задан') : chalk.dim('нет')}`);
+    console.log(chalk.dim('    AssemblyAI: транскрипт + спикеры в облаке, можно задать число спикеров.'));
+    console.log(chalk.dim('    Ключ бесплатно (без карты): https://www.assemblyai.com'));
+    console.log();
+
+    const action = await select({
+      message: 'Провайдер транскрипции',
+      choices: [
+        { name: `${cfg.provider !== 'assembly' ? '●' : '○'}  Deepgram (по умолчанию)`, value: 'deepgram' },
+        { name: `${cfg.provider === 'assembly' ? '●' : '○'}  AssemblyAI (число спикеров, облако)`, value: 'assembly' },
+        { name: '🔑  Ключ AssemblyAI', value: 'key' },
+        { name: '↩️   Назад', value: 'back' },
+      ],
+    });
+    if (action === 'back') break;
+
+    if (action === 'deepgram') {
+      cfg.provider = 'deepgram'; saveConfig(cfg); console.log(chalk.green('  Провайдер: Deepgram'));
+    } else if (action === 'assembly') {
+      if (!cfg.assemblyKey) { console.log(chalk.yellow('  Сначала задайте ключ AssemblyAI.')); continue; }
+      cfg.provider = 'assembly'; saveConfig(cfg);
+      console.log(chalk.green('  Провайдер: AssemblyAI'));
+      console.log(chalk.dim('  Число спикеров спросит в потоке: «Найдено N — столько и есть?»'));
+    } else if (action === 'key') {
+      const k = await input({ message: 'Ключ AssemblyAI:' });
+      if (k.trim()) { cfg.assemblyKey = k.trim(); saveConfig(cfg); console.log(chalk.green('  Сохранено.')); }
     }
   }
 }
@@ -537,6 +595,7 @@ async function editSettings(cfg) {
     message: 'Настройки',
     choices: [
       { name: '🔑  Изменить API-ключ Deepgram', value: 'key' },
+      { name: `☁️   Провайдер транскрипции (${cfg.provider === 'assembly' ? 'AssemblyAI' : 'Deepgram'})`, value: 'provider' },
       { name: hasSaKey() ? '🔄  Заменить SA-ключ Google Drive' : '📂  Добавить SA-ключ Google Drive', value: 'sa' },
       { name: `👤  Список спикеров (${(cfg.speakerNames||[]).length})`, value: 'speakers-list' },
       { name: `🧠  Авто-саммари (${cfg.summaryEnabled ? 'вкл' : 'выкл'})`, value: 'summary' },
@@ -569,6 +628,8 @@ async function editSettings(cfg) {
     await editSpeakerNames(cfg);
   } else if (action === 'summary') {
     await editSummarySettings(cfg);
+  } else if (action === 'provider') {
+    await editProviderSettings(cfg);
   } else if (action === 'dir') {
     console.log(chalk.dim('  Открываю диалог...'));
     const p = pickFolder(cfg.lastOutputDir || '');
@@ -585,6 +646,7 @@ async function editSettings(cfg) {
     console.log();
     console.log(chalk.cyan('  ┌─ Окружение ─────────────────────'));
     console.log(chalk.cyan('  │') + ` API-ключ Deepgram:  ${key ? chalk.green('✓')+' '+masked : chalk.red('✗ не задан')}`);
+    console.log(chalk.cyan('  │') + ` Провайдер:  ${cfg.provider === 'assembly' ? 'AssemblyAI'+(cfg.assemblyKey?'':chalk.red(' (нет ключа!)')) : 'Deepgram'}`);
     console.log(chalk.cyan('  │') + ` Язык:      ${cfg.autoLang!==false?'авто':(cfg.lang||'ru')}`);
     console.log(chalk.cyan('  │') + ` Спикеры:   ${cfg.speakers?'да':'нет'}`);
     console.log(chalk.cyan('  │') + ` Склейка реплик: ${cfg.mergeUtterances!==false?'да':'нет'}`);
@@ -592,7 +654,7 @@ async function editSettings(cfg) {
     console.log(chalk.cyan('  │') + ` Папка:     ${cfg.lastOutputDir||chalk.dim('рядом с файлом')}`);
     console.log(chalk.cyan('  │') + ` Ярлык:     ${shortcutExists()?chalk.green('✓ есть'):chalk.dim('нет')}`);
     console.log(chalk.cyan('  │') + ` SA-ключ Google Drive:   ${hasSaKey()?chalk.green('✓')+' '+getSaKeyPath():chalk.dim('нет')}`);
-    console.log(chalk.cyan('  │') + ` Авто-саммари: ${cfg.summaryEnabled?chalk.green('✓ вкл')+chalk.dim(' '+(cfg.summaryModel||'')):chalk.dim('выкл')}${cfg.summaryEnabled&&!cfg.openrouterKey?chalk.red(' (нет ключа!)'):''}`);
+    console.log(chalk.cyan('  │') + ` Авто-саммари: ${cfg.summaryEnabled?chalk.green('✓ вкл')+chalk.dim(' '+(cfg.summaryModel||'')):chalk.dim('выкл')}${cfg.summaryEnabled&&!cfg.geminiKey?chalk.red(' (нет ключа!)'):''}`);
     console.log(chalk.cyan('  │') + ` ffmpeg:    ${has('ffmpeg')?chalk.green('✓'):chalk.red('✗')}`);
     console.log(chalk.cyan('  │') + ` yt-dlp:    ${has('yt-dlp')?chalk.green('✓'):chalk.red('✗')}`);
     console.log(chalk.cyan('  │') + ` Конфиг:    ${CONFIG_PATH}`);
@@ -643,6 +705,9 @@ async function interactiveMenu() {
       } else {
         const opts = await askOptions(cfg);
         opts.summarize = buildSummarizeCb(cfg);
+        opts.provider = cfg.provider || 'deepgram';
+        opts.assemblyKey = cfg.assemblyKey;
+        opts.onDiarCount = cfg.provider === 'assembly' ? askDiarCount : undefined;
         if (mode === 'file') produced = await runFileMode(apiKey, opts, cfg);
         else if (mode === 'batch') produced = await runBatchMode(apiKey, opts, cfg);
         else if (mode === 'url') produced = await runUrlMode(apiKey, opts, cfg);

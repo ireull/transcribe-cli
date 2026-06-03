@@ -18,7 +18,7 @@ test('loadConfig: дефолты при отсутствии файла', () => 
   assert.equal(cfg.mergeUtterances, true);
   assert.equal(cfg.numerals, true);
   assert.equal(cfg.summaryEnabled, false);
-  assert.equal(cfg.summaryModel, 'qwen/qwen3-8b:free');
+  assert.equal(cfg.summaryModel, 'gemini-3.5-flash');
 });
 
 test('saveConfig → loadConfig: round-trip', () => {
@@ -37,7 +37,13 @@ test('loadConfig: старый конфиг без новых полей пол�
   const cfg = loadConfig();
   assert.equal(cfg.apiKey, 'old');          // сохранённое осталось
   assert.equal(cfg.autoLang, true);          // новое поле — из DEFAULTS
-  assert.equal(cfg.summaryModel, 'qwen/qwen3-8b:free');
+  assert.equal(cfg.summaryModel, 'gemini-3.5-flash');
+});
+
+test('loadConfig: миграция старой OpenRouter-модели → Gemini-дефолт', () => {
+  writeFileSync(CONFIG_PATH, JSON.stringify({ summaryModel: 'qwen/qwen3-8b:free' }), 'utf-8');
+  const cfg = loadConfig();
+  assert.equal(cfg.summaryModel, 'gemini-3.5-flash');  // слаг с "/" сброшен на дефолт
 });
 
 test('loadConfig: битый JSON → дефолты, не падает', () => {
