@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 
 // package.json лежит рядом с upgrade.js в папке глобальной установки пакета.
-// Отсюда берём текущую версию и git-URL для обновления.
+// Отсюда берём имя пакета (для npm) и текущую версию.
 const PKG_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_PATH = join(PKG_DIR, 'package.json');
 
@@ -20,81 +20,54 @@ function readPkg() {
 }
 
 /**
- * Парсит repository.url из package.json в:
- *   - install: строка для `npm install -g <...>` (с префиксом git+)
- *   - display: человекочитаемый https://github.com/user/repo для показа пользователю
- *   - slug:   { user, repo } для fetch к raw.githubusercontent.com
+ * Достаёт последнюю опубликованную версию из npm-реестра без установки.
+ * Читает packument напрямую (GET registry) и берёт dist-tags.latest — быстрее,
+ * чем спавнить `npm view`. Scoped-имя (@scope/pkg) в пути реестра валидно как есть.
+ * Возвращает null при сетевой ошибке или 404 (пакет ещё не опубликован).
  */
-function parseRepoUrl(repoField) {
-  const raw = typeof repoField === 'string' ? repoField : repoField?.url;
-  if (!raw) return null;
-
-  const install = raw.startsWith('git+') ? raw : `git+${raw}`;
-
-  // github.com/<user>/<repo> — матчит и /, и : в разделителе (scp-style git@host:user/repo)
-  const m = raw.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/);
-  const display = m ? `https://github.com/${m[1]}/${m[2]}` : raw;
-  const slug = m ? { user: m[1], repo: m[2] } : null;
-
-  return { install, display, slug };
-}
-
-/**
- * Пытается достать version из package.json на GitHub без клонирования.
- * Работает только для публичных репозиториев. Пробует master, затем main.
- * Возвращает null при сетевой ошибке или для приватных репо (404).
- */
-async function fetchRemoteVersion(slug) {
-  if (!slug) return null;
-  for (const branch of ['master', 'main']) {
-    try {
-      const url = `https://raw.githubusercontent.com/${slug.user}/${slug.repo}/${branch}/package.json`;
-      const r = await fetch(url);
-      if (!r.ok) continue;
-      const remote = await r.json();
-      if (remote.version) return remote.version;
-    } catch {
-      // сетевая ошибка — пробуем следующую ветку
-    }
+async function fetchLatestVersion(name) {
+  try {
+    const r = await fetch(`https://registry.npmjs.org/${name}`);
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data['dist-tags']?.latest || null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /**
- * Автоматическое обновление: `npm install -g git+https://github.com/.../transcribe-cli.git`.
+ * Автоматическое обновление через npm-реестр: `npm install -g <name>@latest`.
  *
- * npm сам клонирует в temp, ставит зависимости и устанавливает глобально — никакого локального git clone держать не нужно. Репозиторий публичный,
- * поэтому HTTPS URL — никакие SSH-ключи не требуются.
+ * npm сам скачивает свежий тарбол из реестра, ставит зависимости и обновляет
+ * глобальную установку — локальная папка с исходниками не нужна, пакет публичный
+ * (никаких токенов для установки не требуется).
  *
- * Источник читается из поля `repository` в собственном package.json установленной версии.
- * Перед установкой проверяется remote-версия через raw.githubusercontent.com — если
- * она совпадает с установленной, ранний выход без запуска npm (экономит ~20 секунд).
+ * Имя пакета читается из поля `name` собственного package.json установленной
+ * версии. Перед установкой сверяем latest из реестра с установленной версией —
+ * если совпали, ранний выход без запуска npm (экономит ~20 секунд).
  */
 export async function runUpgrade() {
   console.log();
 
   const pkg = readPkg();
-  if (!pkg) {
+  if (!pkg?.name) {
     console.log(chalk.red('  Не могу прочитать package.json установки.'));
     console.log(chalk.dim(`  Ожидался: ${PKG_PATH}`));
     return;
   }
 
-  const repo = parseRepoUrl(pkg.repository);
-  if (!repo) {
-    console.log(chalk.red('  В package.json нет поля repository — не знаю, откуда качать.'));
-    console.log(chalk.dim('  Обновитесь вручную: npm install -g git+https://github.com/<owner>/transcribe-cli.git'));
-    return;
-  }
-
+  const name = pkg.name;
   const oldVersion = pkg.version;
+  const npmUrl = `https://www.npmjs.com/package/${name}`;
+  const target = `${name}@latest`;
   console.log(chalk.cyan(`  Текущая версия: ${oldVersion}`));
-  console.log(chalk.cyan(`  Источник:       ${repo.display}`));
+  console.log(chalk.cyan(`  Пакет:          ${name}`));
   console.log();
 
-  // ─── 1. Проверка версии на GitHub (без клонирования) ──────────────
+  // ─── 1. Проверка последней версии в реестре (без установки) ───────
   const checkSp = ora({ text: chalk.cyan('Проверяю последнюю версию...'), spinner: 'dots' }).start();
-  const remoteVersion = await fetchRemoteVersion(repo.slug);
+  const remoteVersion = await fetchLatestVersion(name);
   if (remoteVersion) {
     if (remoteVersion === oldVersion) {
       checkSp.succeed(`Уже последняя версия (${oldVersion}).`);
@@ -107,11 +80,11 @@ export async function runUpgrade() {
 
   // ─── 2. Установка ─────────────────────────────────────────────────
   const installSp = ora({
-    text: chalk.cyan(`npm install -g ${repo.install}`),
+    text: chalk.cyan(`npm install -g ${target}`),
     spinner: 'dots',
   }).start();
   try {
-    execSync(`npm install -g "${repo.install}"`, { stdio: 'pipe', encoding: 'utf-8' });
+    execSync(`npm install -g "${target}"`, { stdio: 'pipe', encoding: 'utf-8' });
     installSp.succeed('Установка завершена.');
   } catch (e) {
     const msg = (e.stderr?.toString() || e.message || '').trim();
@@ -119,14 +92,15 @@ export async function runUpgrade() {
 
     if (/EACCES|permission denied/i.test(msg)) {
       console.log(chalk.dim('  Нужны права. Запустите вручную:'));
-      console.log(chalk.dim(`    sudo npm install -g "${repo.install}"`));
+      console.log(chalk.dim(`    sudo npm install -g "${target}"`));
     } else if (platform() === 'win32') {
       console.log(chalk.dim('  На Windows запущенный процесс transcribe может блокировать перезапись.'));
       console.log(chalk.dim('  Закройте все окна transcribe и повторите команду.'));
     } else {
       console.log(chalk.dim('  Запустите вручную:'));
-      console.log(chalk.dim(`    npm install -g "${repo.install}"`));
+      console.log(chalk.dim(`    npm install -g "${target}"`));
     }
+    console.log(chalk.dim(`  Страница пакета: ${npmUrl}`));
 
     if (msg) {
       console.log();

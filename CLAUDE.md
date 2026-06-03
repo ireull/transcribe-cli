@@ -53,7 +53,7 @@ npm i -g .                       # поставить локальную сбо�
 - [config.js](config.js) — единственный writer `~/.config/transcribe-cli/config.json` (или `$XDG_CONFIG_HOME/transcribe-cli/` если задан). Любое изменение настроек идёт через `loadConfig`/`saveConfig`. Экспортирует `CONFIG_DIR` — все остальные модули, которым нужен путь к пользовательским данным, импортируют его отсюда, а не считают свой.
 - [dialogs.js](dialogs.js) — нативная интеграция с ОС. File picker'ы через `osascript` (macOS) и `powershell` (Windows); Linux для пикеров не поддерживается — возвращает `null`. Плюс `openFile`/`revealFile`/`copyToClipboard` для post-action меню (open/reveal/буфер) — через `execFileSync` с **массивом** аргументов (не строкой), чтобы пути с пробелами/кириллицей не требовали экранирования. На Linux эти три — best-effort (`xdg-open`/`xclip`/`xsel`).
 - [shortcut.js](shortcut.js) — создание ярлыка на рабочем столе (`.command`/`.lnk`+`.bat`/`.desktop`).
-- [upgrade.js](upgrade.js) — `transcribe upgrade`: `npm install -g git+<url>`, см. раздел "Самообновление".
+- [upgrade.js](upgrade.js) — `transcribe upgrade`: `npm install -g <name>@latest` из реестра, см. раздел "Самообновление".
 
 ### Пайплайн транскрипции ([transcribe.js:204](transcribe.js#L204))
 
@@ -134,15 +134,15 @@ npm i -g .                       # поставить локальную сбо�
 
 Механизм:
 
-1. Upgrade читает `repository.url` из своего же `package.json` (лежит рядом с `upgrade.js` в папке глобальной установки, доступен через `import.meta.url`).
-2. Делает `fetch https://raw.githubusercontent.com/<user>/<repo>/master/package.json` (fallback `main`) — сравнивает `version` с установленной. Если совпадает — ранний выход без запуска `npm` (экономит ~20 секунд). Работает только для public-репо; если репо сделают приватным, fetch вернёт 404, и мы просто провалимся в install.
-3. Если версии разные (или проверка не сработала) — `execSync('npm install -g git+https://github.com/.../transcribe-cli.git')`. npm сам клонирует в temp, ставит зависимости и устанавливает глобально. Temp чистится npm-ом.
+1. Upgrade читает `name` и `version` из своего же `package.json` (лежит рядом с `upgrade.js` в папке глобальной установки, доступен через `import.meta.url`).
+2. Делает `fetch https://registry.npmjs.org/<name>` — берёт `dist-tags.latest` и сравнивает с установленной версией. Если совпадает — ранний выход без запуска `npm` (экономит ~20 секунд). При сетевой ошибке/404 просто проваливается в install.
+3. Если версии разные (или проверка не сработала) — `execSync('npm install -g <name>@latest')`. npm сам качает свежий тарбол из реестра, ставит зависимости и обновляет глобальную установку.
 4. После install перечитывает `package.json` с того же пути — файл уже заменён, возвращает новую версию. Показывает пользователю `старая → новая`.
 
-**Репо публичное**, поэтому:
-- В [package.json](package.json) URL формата `git+https://github.com/...`. Никаких SSH-ключей на машине пользователя не нужно — работает из коробки на любой машине с Node и git.
-- Первичная установка — `npm install -g @ireull/transcribe-cli` (или `git+https://github.com/ireull/transcribe-cli.git`). Из клона для разработки — `npm i -g .` в папке репозитория.
+**Пакет публичный в npm-реестре**, поэтому:
+- Установка/обновление не требуют токенов или авторизации — `npm install -g <name>@latest` работает у любого пользователя (токен нужен только для `npm publish`).
+- Первичная установка — `npm install -g @ireull/transcribe-cli`. Из клона для разработки — `npm i -g .` в папке репозитория.
 
-**[package.json](package.json) обязан содержать поле `repository.url`** — иначе upgrade не знает, откуда качать. Также **версия должна бампаться на каждом релизе** (см. раздел "Рабочий процесс"), иначе проверка через raw.githubusercontent.com покажет "уже последняя" и реальное обновление не запустится.
+**[package.json](package.json) обязан содержать поле `name`** (`@ireull/transcribe-cli`) — по нему upgrade тянет пакет. Также **версию надо бампать И публиковать на каждом релизе** (`npm publish`; см. раздел "Рабочий процесс"), иначе проверка `dist-tags.latest` покажет "уже последняя" и реальное обновление не запустится.
 
 На EACCES upgrade подсказывает `sudo npm install -g ...`, на Windows — закрыть transcribe и повторить. Полный stderr npm выводится при ошибке первыми 10 строк.
