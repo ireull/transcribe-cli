@@ -1,18 +1,19 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, rmSync } from 'fs';
 import { tmpdir, platform } from 'os';
 import { join, basename, extname } from 'path';
 import { randomBytes } from 'crypto';
 import chalk from 'chalk';
 import ora from 'ora';
-import { transcribeAssembly } from './assembly.js';
+import {
+  DIRECT_AUDIO, MIME_MAP, convertToOpus, assembleMarkdown, transcribeToUtterances,
+} from './engine.js';
+
+// Реэкспорт ядровых утилит — публичная поверхность transcribe.js не меняется
+// (их импортируют app.js и тесты). Единый источник — engine.js.
+export { formatTs, opusEncodeArgs } from './engine.js';
 
 const DEEPGRAM_API = 'https://api.deepgram.com/v1/listen';
-const DIRECT_AUDIO = new Set(['.wav', '.mp3', '.ogg', '.flac', '.m4a', '.opus', '.webm']);
-const MIME_MAP = {
-  '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg',
-  '.flac': 'audio/flac', '.m4a': 'audio/mp4', '.opus': 'audio/opus', '.webm': 'audio/webm',
-};
 
 // Централизованный реестр временных директорий: чтобы при SIGINT/SIGTERM/exit
 // мы могли вычистить ВСЕ активные tmp, а не только ту, которую "видит" конкретная
@@ -69,7 +70,7 @@ export function sanitizeFilename(name) {
 
 function checkBin(name, hint) {
   try {
-    execSync(`${platform() === 'win32' ? 'where' : 'which'} ${name}`, { stdio: 'pipe' });
+    execFileSync(platform() === 'win32' ? 'where' : 'which', [name], { stdio: 'pipe' });
     return true;
   } catch {
     console.log(chalk.red(`${name} не найден. ${hint}`));
@@ -82,7 +83,9 @@ const SUBPROCESS_ENV = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: 
 
 function getVideoTitle(url) {
   try {
-    return execSync(`yt-dlp --get-title --no-playlist "${url}"`, {
+    // execFileSync с argv (не shell-строкой): имя/URL не парсятся шеллом — нет инъекции
+    // через `$(...)`/backticks в путях и ссылках (tree-режим скармливает произвольные имена файлов).
+    return execFileSync('yt-dlp', ['--get-title', '--no-playlist', url], {
       encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'],
       env: SUBPROCESS_ENV,
     }).trim().slice(0, 200);
@@ -95,7 +98,7 @@ function downloadAudio(url, tmp) {
   try {
     // opus вместо wav: файл в ~10× меньше, Deepgram его жуёт напрямую (он в DIRECT_AUDIO),
     // и fetch не падает по таймауту на длинных роликах.
-    execSync(`yt-dlp -x --audio-format opus --audio-quality 0 -o "${out}" --no-playlist --concurrent-fragments 4 --quiet "${url}"`, {
+    execFileSync('yt-dlp', ['-x', '--audio-format', 'opus', '--audio-quality', '0', '-o', out, '--no-playlist', '--concurrent-fragments', '4', '--quiet', url], {
       stdio: ['pipe', 'pipe', 'pipe'], timeout: 3600000,
       env: SUBPROCESS_ENV,
     });
@@ -119,50 +122,6 @@ function downloadAudio(url, tmp) {
   const f = readdirSync(tmp).find(f => f.startsWith('audio'));
   if (!f) throw new Error('yt-dlp завершился без ошибок, но файл не создан. Попробуйте обновить yt-dlp: pip install -U yt-dlp');
   return join(tmp, f);
-}
-
-// Аудио-аргументы ffmpeg для opus.
-//  - обычный режим: 32 kbps mono voip — для распознавания СЛОВ хватает с запасом,
-//    файл ~в 8× меньше WAV (115 MB/ч → 14 MB/ч), аплоад быстрый.
-//  - hq (диаризация): 128 kbps + сохраняем каналы (не mono). Диаризация v2 строит
-//    голосовые эмбеддинги по тонким спектральным признакам; на 32k mono у тихих/
-//    редко говорящих спикеров они теряются и Deepgram их сливает. На реальном
-//    5-спикерном созвоне 32k→3/5, 96k→4/5; 128k — потолок из ресёрча (~56 MB/ч,
-//    всё ещё компактно). У Deepgram нет подсказки числа спикеров, так что качество
-//    аудио — единственный рычаг.
-export function opusEncodeArgs(hq) {
-  return hq
-    ? '-c:a libopus -b:a 128k -ar 16000 -application audio'
-    : '-c:a libopus -b:a 32k -ar 16000 -ac 1 -application voip';
-}
-
-function convertToOpus(input, tmp, { hq = false } = {}) {
-  const hint = platform() === 'darwin' ? 'brew install ffmpeg' : 'choco install ffmpeg';
-  if (!checkBin('ffmpeg', hint)) process.exit(1);
-  const out = join(tmp, 'converted.opus');
-  try {
-    execSync(
-      `ffmpeg -i "${input}" -vn ${opusEncodeArgs(hq)} -y -loglevel error "${out}"`,
-      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 20*60000 }
-    );
-  } catch (e) {
-    const stderr = (e.stderr?.toString() || '').trim();
-    if (e.killed || e.signal === 'SIGTERM') {
-      throw new Error('Конвертация прервана: превышен таймаут (20 мин). Файл слишком большой?');
-    }
-    if (stderr.includes('Unknown encoder') && stderr.includes('libopus')) {
-      throw new Error(
-        'ffmpeg собран без libopus. Переустановите:\n' +
-        `  ${platform() === 'darwin' ? 'brew reinstall ffmpeg' : 'choco upgrade ffmpeg'}`
-      );
-    }
-    if (stderr.includes('Invalid data found'))     throw new Error('Файл повреждён или формат не поддерживается ffmpeg');
-    if (stderr.includes('No such file'))           throw new Error(`Файл не найден: ${input}`);
-    if (stderr.includes('does not contain'))        throw new Error('В файле нет аудиодорожки');
-    throw new Error(`Ошибка конвертации: ${stderr || e.message}`);
-  }
-  if (!existsSync(out)) throw new Error('ffmpeg завершился без ошибок, но opus-файл не создан');
-  return out;
 }
 
 // Сборка query-параметров для Deepgram вынесена отдельно — чистая и тестируемая.
@@ -219,17 +178,20 @@ async function callDeepgram(filePath, { model, lang, autoLang, speakers, numeral
   return resp.json();
 }
 
-export function formatTs(sec) {
-  const s = Math.floor(sec);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const ss = s % 60;
-  return h
-    ? `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`
-    : `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
-}
-
 export function formatMarkdown(data, speakers, title = '', speakerNames = {}, merge = true, summary = '') {
+  const results = data?.results || {};
+
+  // Диаризованный путь — единый сборщик из движка (один источник правды для
+  // рендера спикеров; так CLI и сервис не форкаются).
+  if (speakers && results.utterances) {
+    return assembleMarkdown({
+      utterances: results.utterances,
+      duration: data?.metadata?.duration || 0,
+      title, speakerNames, merge, summary,
+    });
+  }
+
+  // Путь без спикеров (Deepgram paragraphs/channels): шапка + параграфы.
   const lines = [];
   if (title) lines.push(`# ${title}`, '');
 
@@ -242,33 +204,6 @@ export function formatMarkdown(data, speakers, title = '', speakerNames = {}, me
   }
 
   if (summary) lines.push('## Краткое содержание', '', summary.trim(), '');
-
-  const results = data?.results || {};
-
-  if (speakers && results.utterances) {
-    const utts = results.utterances;
-    let i = 0;
-    while (i < utts.length) {
-      const spk = utts[i].speaker;
-      const name = speakerNames[spk] || `Speaker ${spk ?? '?'}`;
-      const ts = formatTs(utts[i].start ?? 0);
-      lines.push(`**${name}** [${ts}]`);
-      if (merge) {
-        // Склеиваем все подряд идущие реплики одного спикера в один блок:
-        // чище читать и меньше токенов при последующей обработке LLM.
-        const parts = [];
-        while (i < utts.length && utts[i].speaker === spk) {
-          parts.push((utts[i].transcript || '').trim());
-          i++;
-        }
-        lines.push(parts.join(' ').trim(), '');
-      } else {
-        lines.push(utts[i].transcript || '', '');
-        i++;
-      }
-    }
-    return lines.join('\n');
-  }
 
   const alt = results.channels?.[0]?.alternatives?.[0] || {};
   const paras = alt?.paragraphs?.paragraphs || [];
@@ -302,13 +237,26 @@ export function getSpeakerPreviews(data) {
   return [...seen.entries()].map(([id, lines]) => ({ id, lines }));
 }
 
-export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, numSpeakers = 0, onDiarCount, provider = 'deepgram', assemblyKey, model = 'nova-3', apiKey, outputDir, onSpeakers, summarize, name = '', nameIsGeneric = false }) {
+// quiet: для параллельных режимов (tree) — заменяем ora-спиннер заглушкой
+// (внешний прогресс ведёт вызывающий) и глушим финальный блок «Готово».
+function noopSpinner() {
+  // Покрываем все методы ora, которые может дёрнуть runTranscription — иначе будущий
+  // spinner.warn/info/stopAndPersist упал бы только в quiet-режиме (асимметричный баг).
+  const s = {
+    text: '',
+    start() { return s; }, succeed() { return s; }, fail() { return s; },
+    stop() { return s; }, warn() { return s; }, info() { return s; }, stopAndPersist() { return s; },
+  };
+  return s;
+}
+
+export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, numSpeakers = 0, onDiarCount, provider = 'deepgram', assemblyKey, model = 'nova-3', apiKey, outputDir, onSpeakers, summarize, name = '', nameIsGeneric = false, quiet = false }) {
   const tmp = makeTmp();
   // Сигналы SIGINT/SIGTERM обрабатываются глобально в makeTmp — он почистит tmp
   // через activeTmpDirs, так что локальный handler больше не нужен.
 
   let baseName = 'transcript', title = '';
-  const spinner = ora({ text: chalk.cyan('Подготовка...'), spinner: 'dots' }).start();
+  const spinner = quiet ? noopSpinner() : ora({ text: chalk.cyan('Подготовка...'), spinner: 'dots' }).start();
 
   try {
     let audioPath;
@@ -335,24 +283,18 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
     // AssemblyAI всегда отдаёт спикеров — для него рендерим в режиме спикеров.
     if (provider === 'assembly') speakers = true;
 
-    if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
-      spinner.text = chalk.cyan('Конвертирую аудио в opus...');
-      // hq (битрейт + каналы) для облачной диаризации: выше битрейт = точнее спикеры.
-      audioPath = convertToOpus(audioPath, tmp, { hq: speakers });
-      spinner.succeed('Сконвертировано в opus');
-      spinner.start();
-    }
-
     let raw;
     if (provider === 'assembly') {
-      // AssemblyAI: транскрипт + диаризация в одном вызове. Цикл числа спикеров:
-      // показали → не то → пересчитали со speakers_expected.
+      // Ядро (engine.transcribeToUtterances) само конвертирует в opus, заливает и
+      // диаризует. Цикл числа спикеров — это ИНТЕРАКТИВНАЯ обёртка CLI поверх ядра:
+      // показали → не то → пересчитали со speakers_expected. Само ядро ввода не ждёт.
       let forceN = numSpeakers, result;
       while (true) {
         spinner.text = chalk.cyan(forceN > 0 ? `AssemblyAI (${forceN} спикеров)...` : 'AssemblyAI (транскрипт + спикеры)...');
         spinner.start();
-        result = await transcribeAssembly(audioPath, {
-          apiKey: assemblyKey, lang: autoLang ? 'ru' : lang, speakersExpected: forceN,
+        result = await transcribeToUtterances({
+          input: audioPath, lang: autoLang ? 'ru' : lang, diarization: true,
+          speakersExpected: forceN, apiKey: assemblyKey,
           log: m => { spinner.text = chalk.cyan(`AssemblyAI: ${m}`); },
         });
         spinner.succeed(`AssemblyAI: ${result.speakers} спикеров`);
@@ -363,6 +305,13 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
       }
       raw = { metadata: { duration: result.duration }, results: { utterances: result.utterances } };
     } else {
+      if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
+        spinner.text = chalk.cyan('Конвертирую аудио в opus...');
+        // hq (битрейт + каналы) для облачной диаризации: выше битрейт = точнее спикеры.
+        audioPath = convertToOpus(audioPath, tmp, { hq: speakers });
+        spinner.succeed('Сконвертировано в opus');
+        spinner.start();
+      }
       const mb = (statSync(audioPath).size / 1048576).toFixed(1);
       spinner.text = chalk.cyan(`Транскрибирую (${mb} MB)...`);
       raw = await callDeepgram(audioPath, { model, lang, autoLang, speakers, numerals, apiKey });
@@ -408,24 +357,26 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
     writeFileSync(outPath, formatMarkdown(raw, speakers, title, speakerNames, merge, summaryPara), 'utf-8');
 
     // Итог
-    const d = raw?.metadata?.duration;
-    let durStr = '';
-    if (d) { let s = Math.floor(d); const h = Math.floor(s/3600); s%=3600; const m = Math.floor(s/60); s%=60; durStr = h ? `${h}ч ${m}мин ${s}сек` : `${m}мин ${s}сек`; }
-    const sz = statSync(outPath).size;
+    if (!quiet) {
+      const d = raw?.metadata?.duration;
+      let durStr = '';
+      if (d) { let s = Math.floor(d); const h = Math.floor(s/3600); s%=3600; const m = Math.floor(s/60); s%=60; durStr = h ? `${h}ч ${m}мин ${s}сек` : `${m}мин ${s}сек`; }
+      const sz = statSync(outPath).size;
 
-    const preview = readFileSync(outPath, 'utf-8').trim().split('\n');
-    let prev = preview.slice(0, 5).join('\n');
-    if (preview.length > 5) prev += chalk.dim(`\n... еще ${preview.length - 5} строк`);
+      const preview = readFileSync(outPath, 'utf-8').trim().split('\n');
+      let prev = preview.slice(0, 5).join('\n');
+      if (preview.length > 5) prev += chalk.dim(`\n... еще ${preview.length - 5} строк`);
 
-    console.log();
-    console.log(chalk.green('┌─ Готово ─────────────────────────────'));
-    console.log(chalk.green('│') + ` Файл:         ${outPath}`);
-    console.log(chalk.green('│') + ` Размер:       ${sz > 1024 ? (sz/1024).toFixed(1)+' KB' : sz+' B'}`);
-    if (durStr) console.log(chalk.green('│') + ` Длительность: ${durStr}`);
-    console.log(chalk.green('│') + ` Превью:`);
-    for (const l of prev.split('\n')) console.log(chalk.green('│') + `   ${l}`);
-    console.log(chalk.green('└──────────────────────────────────────'));
-    console.log();
+      console.log();
+      console.log(chalk.green('┌─ Готово ─────────────────────────────'));
+      console.log(chalk.green('│') + ` Файл:         ${outPath}`);
+      console.log(chalk.green('│') + ` Размер:       ${sz > 1024 ? (sz/1024).toFixed(1)+' KB' : sz+' B'}`);
+      if (durStr) console.log(chalk.green('│') + ` Длительность: ${durStr}`);
+      console.log(chalk.green('│') + ` Превью:`);
+      for (const l of prev.split('\n')) console.log(chalk.green('│') + `   ${l}`);
+      console.log(chalk.green('└──────────────────────────────────────'));
+      console.log();
+    }
     return outPath;
   } catch (e) {
     spinner.fail(chalk.red(e.message));

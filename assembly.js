@@ -2,8 +2,9 @@ import { readFileSync } from 'fs';
 
 // AssemblyAI — облачный провайдер: транскрипт + диаризация в одном вызове,
 // с подсказкой числа спикеров (speakers_expected). Русский поддерживается.
-// Возвращает utterances в формате Deepgram ({speaker, start(сек), end, transcript}),
-// который понимает formatMarkdown/getSpeakerPreviews — остальной пайплайн не меняется.
+// Возвращает utterances {speaker, start(сек), end, transcript}; speaker — буква
+// A/B/C как её отдаёт AssemblyAI (метки «Speaker A/B/C»). formatMarkdown/
+// getSpeakerPreviews/assembleMarkdown работают с любым типом метки.
 const API = 'https://api.assemblyai.com/v2';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -43,9 +44,10 @@ export async function transcribeAssembly(audioPath, { apiKey, lang = 'ru', speak
     log(`статус: ${t.status}…`);
   }
 
-  // 4. Маппинг utterances: спикер A/B/C → 0/1/2, время мс → сек.
+  // 4. Маппинг utterances: метку спикера (A/B/C) СОХРАНЯЕМ как есть, время мс → сек.
+  //    Именование — не дело движка: «Speaker A/B/C» переименовывают позже (Telegram/CLI).
   const utterances = (t.utterances || []).map(u => ({
-    speaker: typeof u.speaker === 'string' && /^[A-Z]$/.test(u.speaker) ? u.speaker.charCodeAt(0) - 65 : u.speaker,
+    speaker: u.speaker,
     start: (u.start || 0) / 1000,
     end: (u.end || 0) / 1000,
     transcript: u.text || '',
