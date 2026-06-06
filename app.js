@@ -196,12 +196,36 @@ async function ensureApiKey(cfg) {
 
 // ─── Опции ──────────────────────────────────────────────────────────
 
-// Единый чеклист опций. Предзаполнен из конфига → обычно достаточно Enter
-// (запоминаем последнее, не переспрашиваем каждый раз). Пробел — переключить.
+// Опции транскрипции живут в конфиге и редактируются в Настройках
+// (editTranscriptionOptions). Перед запуском НЕ спрашиваются — все пользуются
+// дефолтами, и промпт на каждый запуск был лишним действием.
+// Чистый маппинг cfg → opts для runTranscription (отсутствие ключа = вкл).
+export function optionsFromConfig(cfg) {
+  return {
+    speakers: cfg.speakers !== false,
+    merge: cfg.mergeUtterances !== false,
+    numerals: cfg.numerals !== false,
+    autoLang: cfg.autoLang !== false,
+    lang: cfg.lang || 'ru',
+  };
+}
+
+// Однострочная сводка активных опций — печатается перед запуском, чтобы было
+// видно, с чем пойдёт транскрипция, без лишнего промпта.
+function optionsSummary(opts) {
+  return [
+    opts.speakers ? 'спикеры' : 'без спикеров',
+    opts.merge ? 'склейка' : 'без склейки',
+    opts.numerals ? 'числа цифрами' : 'числа словами',
+    opts.autoLang ? 'язык: авто' : `язык: ${opts.lang}`,
+  ].join(' · ');
+}
+
+// Единый чеклист опций — пункт Настроек. Предзаполнен из конфига.
 // Порядок фиксированный: пункты не прыгают при вкл/выкл.
-async function askOptions(cfg) {
+async function editTranscriptionOptions(cfg) {
   const picked = await checkbox({
-    message: 'Опции транскрипции (␣ вкл/выкл · ↵ старт · ^C назад):',
+    message: 'Опции транскрипции (␣ вкл/выкл · ↵ сохранить · ^C назад):',
     choices: [
       { name: 'Разделять спикеров',              value: 'speakers', checked: cfg.speakers !== false },
       { name: 'Склеивать реплики одного спикера', value: 'merge',    checked: cfg.mergeUtterances !== false },
@@ -231,10 +255,12 @@ async function askOptions(cfg) {
     if (lang === 'other') lang = await input({ message: 'Код языка (BCP-47):', default: 'ru' });
   }
 
+  // Применяем и сохраняем только после ВСЕХ промптов: Ctrl+C на любом шаге —
+  // чистая отмена (ExitPromptError всплывает в interactiveMenu), cfg не трогаем.
   cfg.speakers = speakers; cfg.mergeUtterances = merge; cfg.numerals = numerals;
   cfg.autoLang = autoLang; cfg.lang = lang;
   saveConfig(cfg);
-  return { speakers, merge, numerals, autoLang, lang };
+  console.log(chalk.green(`  Сохранено: ${optionsSummary(optionsFromConfig(cfg))}`));
 }
 
 async function askOutputDir(cfg, defaultDir, label = 'Рядом с файлом') {
@@ -440,8 +466,9 @@ async function runMeetMode(apiKey, cfg) {
   const selectedFile = files.find(f => f.id === selectedId);
   if (!selectedFile) return;
 
-  // Опции транскрипции
-  const opts = await askOptions(cfg);
+  // Опции транскрипции — из конфига (менять: Настройки → Опции транскрипции).
+  const opts = optionsFromConfig(cfg);
+  console.log(chalk.dim(`  Опции: ${optionsSummary(opts)} · менять: Настройки`));
   opts.summarize = buildSummarizeCb(cfg);
   opts.provider = cfg.provider || 'deepgram';
   opts.assemblyKey = cfg.assemblyKey;
@@ -636,6 +663,7 @@ async function editSettings(cfg) {
     choices: [
       { name: '🔑  Изменить API-ключ Deepgram', value: 'key' },
       { name: `☁️   Провайдер транскрипции (${cfg.provider === 'assembly' ? 'AssemblyAI' : 'Deepgram'})`, value: 'provider' },
+      { name: '🎚  Опции транскрипции', value: 'options' },
       { name: hasSaKey() ? '🔄  Заменить SA-ключ Google Drive' : '📂  Добавить SA-ключ Google Drive', value: 'sa' },
       { name: `👤  Список спикеров (${(cfg.speakerNames||[]).length})`, value: 'speakers-list' },
       { name: `🧠  Авто-саммари (${cfg.summaryEnabled ? 'вкл' : 'выкл'})`, value: 'summary' },
@@ -671,6 +699,8 @@ async function editSettings(cfg) {
     await editSummarySettings(cfg);
   } else if (action === 'provider') {
     await editProviderSettings(cfg);
+  } else if (action === 'options') {
+    await editTranscriptionOptions(cfg);
   } else if (action === 'rename-drive') {
     await editRenameDriveSetting(cfg);
   } else if (action === 'dir') {
@@ -691,7 +721,7 @@ async function editSettings(cfg) {
     console.log(chalk.cyan('  │') + ` API-ключ Deepgram:  ${key ? chalk.green('✓')+' '+masked : chalk.red('✗ не задан')}`);
     console.log(chalk.cyan('  │') + ` Провайдер:  ${cfg.provider === 'assembly' ? 'AssemblyAI'+(cfg.assemblyKey?'':chalk.red(' (нет ключа!)')) : 'Deepgram'}`);
     console.log(chalk.cyan('  │') + ` Язык:      ${cfg.autoLang!==false?'авто':(cfg.lang||'ru')}`);
-    console.log(chalk.cyan('  │') + ` Спикеры:   ${cfg.speakers?'да':'нет'}`);
+    console.log(chalk.cyan('  │') + ` Спикеры:   ${cfg.speakers!==false?'да':'нет'}`);
     console.log(chalk.cyan('  │') + ` Склейка реплик: ${cfg.mergeUtterances!==false?'да':'нет'}`);
     console.log(chalk.cyan('  │') + ` Числа цифрами:  ${cfg.numerals!==false?'да':'нет'}`);
     console.log(chalk.cyan('  │') + ` Папка:     ${cfg.lastOutputDir||chalk.dim('рядом с файлом')}`);
@@ -746,7 +776,8 @@ async function interactiveMenu() {
       if (mode === 'meet') {
         produced = await runMeetMode(apiKey, cfg);
       } else {
-        const opts = await askOptions(cfg);
+        const opts = optionsFromConfig(cfg);
+        console.log(chalk.dim(`  Опции: ${optionsSummary(opts)} · менять: Настройки`));
         opts.summarize = buildSummarizeCb(cfg);
         opts.provider = cfg.provider || 'deepgram';
         opts.assemblyKey = cfg.assemblyKey;
