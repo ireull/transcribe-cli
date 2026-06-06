@@ -285,8 +285,17 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
 
     let raw;
     if (provider === 'assembly') {
-      // Ядро (engine.transcribeToUtterances) само конвертирует в opus, заливает и
-      // диаризует. Цикл числа спикеров — это ИНТЕРАКТИВНАЯ обёртка CLI поверх ядра:
+      // Конвертируем в opus ОДИН раз ДО цикла пересчёта спикеров — иначе каждый
+      // «не то число → пересчитать» гонял бы ffmpeg по исходнику заново. Конвертим
+      // в CLI-tmp (реестр activeTmpDirs) — чистится и по SIGINT; ядро увидит .opus
+      // (DIRECT_AUDIO) и свою конвертацию пропустит. hq: AssemblyAI всегда диаризует.
+      if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
+        spinner.text = chalk.cyan('Конвертирую аудио в opus...');
+        audioPath = convertToOpus(audioPath, tmp, { hq: true });
+        spinner.succeed('Сконвертировано в opus');
+        spinner.start();
+      }
+      // Цикл числа спикеров — ИНТЕРАКТИВНАЯ обёртка CLI поверх ядра:
       // показали → не то → пересчитали со speakers_expected. Само ядро ввода не ждёт.
       let forceN = numSpeakers, result;
       while (true) {

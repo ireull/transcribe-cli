@@ -8,7 +8,15 @@ import { readFileSync } from 'fs';
 const API = 'https://api.assemblyai.com/v2';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-export async function transcribeAssembly(audioPath, { apiKey, lang = 'ru', speakersExpected = 0, log = () => {} }) {
+// Поллинг: жёсткий дедлайн на весь job + терпимость к транзиентным сбоям.
+// Сколько НЕУДАЧНЫХ опросов подряд терпим, прежде чем сдаться (сеть/5xx/429).
+const MAX_POLL_FAILURES = 5;
+
+export async function transcribeAssembly(audioPath, {
+  apiKey, lang = 'ru', speakersExpected = 0, log = () => {},
+  pollIntervalMs = 3000,
+  pollTimeoutMs = 60 * 60000, // дедлайн всего поллинга; иначе завис job = завис вызывающий
+}) {
   if (!apiKey) throw new Error('Нет ключа AssemblyAI');
 
   // 1. Загрузка аудио (raw bytes) → upload_url.
@@ -33,12 +41,42 @@ export async function transcribeAssembly(audioPath, { apiKey, lang = 'ru', speak
   if (!sub.ok) throw new Error(`AssemblyAI submit (${sub.status}): ${(await sub.text()).slice(0, 200)}`);
   const { id } = await sub.json();
 
-  // 3. Поллинг до готовности.
+  // 3. Поллинг до готовности — с дедлайном и устойчивостью к транзиентным сбоям.
+  // Job уже отправлен и БИЛЛИТСЯ: бросить его из-за одного сетевого чиха нельзя —
+  // ретрай вызывающего перезальёт аудио и пересабмитит job (двойной счёт). Поэтому
+  // сетевые ошибки и 5xx/408/429 ретраим с бэкоффом; жёстко падаем только по
+  // дедлайну, по t.status === 'error' или по невосстановимому 4xx (ключ/джоб протух).
+  const deadline = Date.now() + pollTimeoutMs;
+  let failures = 0; // неудачные опросы ПОДРЯД; сбрасывается успешным ответом
   let t;
   for (;;) {
-    await sleep(3000);
-    const r = await fetch(`${API}/transcript/${id}`, { headers: { authorization: apiKey } });
-    t = await r.json();
+    if (Date.now() >= deadline) {
+      throw new Error(`AssemblyAI: job ${id} не завершился за ${Math.round(pollTimeoutMs / 60000)} мин — прекращаю поллинг`);
+    }
+    await sleep(Math.min(pollIntervalMs * 2 ** failures, 60000)); // сбои → реже опрос
+    try {
+      const r = await fetch(`${API}/transcript/${id}`, { headers: { authorization: apiKey } });
+      if (!r.ok) {
+        if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
+          // Невосстановимо (401/403/404…): ретраи бессмысленны, падаем сразу.
+          throw Object.assign(
+            new Error(`AssemblyAI poll (${r.status}): ${(await r.text()).slice(0, 200)}`),
+            { fatal: true }
+          );
+        }
+        throw new Error(`AssemblyAI poll (${r.status})`); // 5xx/408/429 — транзиентно
+      }
+      t = await r.json();
+      failures = 0;
+    } catch (e) {
+      if (e.fatal) throw e;
+      failures++;
+      if (failures > MAX_POLL_FAILURES) {
+        throw new Error(`AssemblyAI: поллинг job ${id} не восстановился после ${failures} сбоев подряд: ${e.message}`);
+      }
+      log(`сбой поллинга (${failures}/${MAX_POLL_FAILURES}): ${e.message} — повторю…`);
+      continue;
+    }
     if (t.status === 'completed') break;
     if (t.status === 'error') throw new Error(`AssemblyAI: ${t.error || 'ошибка обработки'}`);
     log(`статус: ${t.status}…`);

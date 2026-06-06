@@ -155,6 +155,8 @@ export async function transcribeToUtterances({
   diarization = true,
   speakersExpected = 0,
   apiKey = process.env.ASSEMBLYAI_API_KEY,
+  pollIntervalMs,
+  pollTimeoutMs,
   log = () => {},
 } = {}) {
   if (!input) throw new Error('engine: не указан input (путь к медиафайлу)');
@@ -176,6 +178,9 @@ export async function transcribeToUtterances({
       apiKey,
       lang,
       speakersExpected,
+      // Поллинг-ручки пробрасываем только если заданы — дефолты живут в assembly.js.
+      ...(pollIntervalMs != null ? { pollIntervalMs } : {}),
+      ...(pollTimeoutMs != null ? { pollTimeoutMs } : {}),
       log,
     });
     return { utterances: result.utterances, duration: result.duration, speakers: result.speakers };
@@ -189,8 +194,8 @@ export async function transcribeToUtterances({
  * Чистая сигнатура: input (путь), опции, outputPath (путь). Без TUI/prompt/stdin.
  *
  * @param {{input:string, outputPath?:string, lang?:string, diarization?:boolean,
- *          speakersExpected?:number, apiKey?:string, title?:string,
- *          merge?:boolean, log?:(m:string)=>void}} arg
+ *          speakersExpected?:number, apiKey?:string, title?:string, merge?:boolean,
+ *          pollIntervalMs?:number, pollTimeoutMs?:number, log?:(m:string)=>void}} arg
  * @returns {Promise<{outputPath:string, markdown:string, speakers:number,
  *                    duration:number, utterances:Array}>}
  */
@@ -203,10 +208,12 @@ export async function transcribeFile({
   apiKey = process.env.ASSEMBLYAI_API_KEY,
   title = '',
   merge = true,
+  pollIntervalMs,
+  pollTimeoutMs,
   log = () => {},
 } = {}) {
   const { utterances, duration, speakers } = await transcribeToUtterances({
-    input, lang, diarization, speakersExpected, apiKey, log,
+    input, lang, diarization, speakersExpected, apiKey, pollIntervalMs, pollTimeoutMs, log,
   });
   const markdown = assembleMarkdown({ utterances, duration, title, merge });
   if (outputPath) {
