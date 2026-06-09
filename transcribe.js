@@ -302,7 +302,7 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
         spinner.text = chalk.cyan(forceN > 0 ? `AssemblyAI (${forceN} спикеров)...` : 'AssemblyAI (транскрипт + спикеры)...');
         spinner.start();
         result = await transcribeToUtterances({
-          input: audioPath, lang: autoLang ? 'ru' : lang, diarization: true,
+          input: audioPath, lang, detectLanguage: autoLang, diarization: true,
           speakersExpected: forceN, apiKey: assemblyKey,
           log: m => { spinner.text = chalk.cyan(`AssemblyAI: ${m}`); },
         });

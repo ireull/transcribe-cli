@@ -1,7 +1,8 @@
 import { readFileSync } from 'fs';
 
 // AssemblyAI — облачный провайдер: транскрипт + диаризация в одном вызове,
-// с подсказкой числа спикеров (speakers_expected). Русский поддерживается.
+// с подсказкой числа спикеров (speakers_expected). Язык задаётся явно или
+// определяется AssemblyAI автоматически.
 // Возвращает utterances {speaker, start(сек), end, transcript}; speaker — буква
 // A/B/C как её отдаёт AssemblyAI (метки «Speaker A/B/C»). formatMarkdown/
 // getSpeakerPreviews/assembleMarkdown работают с любым типом метки.
@@ -13,7 +14,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_POLL_FAILURES = 5;
 
 export async function transcribeAssembly(audioPath, {
-  apiKey, lang = 'ru', speakersExpected = 0, log = () => {},
+  apiKey, lang = 'ru', detectLanguage = false, speakersExpected = 0, log = () => {},
   pollIntervalMs = 3000,
   pollTimeoutMs = 60 * 60000, // дедлайн всего поллинга; иначе завис job = завис вызывающий
 }) {
@@ -31,7 +32,9 @@ export async function transcribeAssembly(audioPath, {
 
   // 2. Запуск задачи: диаризация + (опц.) подсказка числа спикеров.
   log('распознавание + диаризация…');
-  const submitBody = { audio_url: upload_url, speaker_labels: true, language_code: lang };
+  const submitBody = { audio_url: upload_url, speaker_labels: true };
+  if (detectLanguage) submitBody.language_detection = true; // авто-язык; language_code НЕ слать
+  else submitBody.language_code = lang; // ручной язык
   if (speakersExpected > 0) submitBody.speakers_expected = speakersExpected;
   const sub = await fetch(`${API}/transcript`, {
     method: 'POST',

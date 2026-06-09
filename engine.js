@@ -146,12 +146,14 @@ export function assembleMarkdown({ utterances = [], duration = 0, title = '', sp
  * Низкоуровневый шаг: файл → реплики с диаризацией (AssemblyAI).
  * Конвертирует в opus при необходимости, заливает, диаризует, опрашивает статус.
  * Возвращает реплики с метками спикеров A/B/C. НЕ пишет файлов, НЕ форматирует Markdown.
+ * Если detectLanguage=true, AssemblyAI сам определяет язык вместо явного language_code.
  *
  * @returns {Promise<{utterances:Array, duration:number, speakers:number}>}
  */
 export async function transcribeToUtterances({
   input,
   lang = 'ru',
+  detectLanguage = false,
   diarization = true,
   speakersExpected = 0,
   apiKey = process.env.ASSEMBLYAI_API_KEY,
@@ -177,6 +179,7 @@ export async function transcribeToUtterances({
     const result = await transcribeAssembly(audioPath, {
       apiKey,
       lang,
+      detectLanguage,
       speakersExpected,
       // Поллинг-ручки пробрасываем только если заданы — дефолты живут в assembly.js.
       ...(pollIntervalMs != null ? { pollIntervalMs } : {}),
@@ -190,10 +193,10 @@ export async function transcribeToUtterances({
 }
 
 /**
- * Высокоуровневый вход для сервиса: медиафайл → Russian Markdown с диаризацией.
+ * Высокоуровневый вход для сервиса: медиафайл → Markdown с диаризацией.
  * Чистая сигнатура: input (путь), опции, outputPath (путь). Без TUI/prompt/stdin.
  *
- * @param {{input:string, outputPath?:string, lang?:string, diarization?:boolean,
+ * @param {{input:string, outputPath?:string, lang?:string, detectLanguage?:boolean, diarization?:boolean,
  *          speakersExpected?:number, apiKey?:string, title?:string, merge?:boolean,
  *          pollIntervalMs?:number, pollTimeoutMs?:number, log?:(m:string)=>void}} arg
  * @returns {Promise<{outputPath:string, markdown:string, speakers:number,
@@ -203,6 +206,7 @@ export async function transcribeFile({
   input,
   outputPath = '',
   lang = 'ru',
+  detectLanguage = false,
   diarization = true,
   speakersExpected = 0,
   apiKey = process.env.ASSEMBLYAI_API_KEY,
@@ -213,7 +217,7 @@ export async function transcribeFile({
   log = () => {},
 } = {}) {
   const { utterances, duration, speakers } = await transcribeToUtterances({
-    input, lang, diarization, speakersExpected, apiKey, pollIntervalMs, pollTimeoutMs, log,
+    input, lang, detectLanguage, diarization, speakersExpected, apiKey, pollIntervalMs, pollTimeoutMs, log,
   });
   const markdown = assembleMarkdown({ utterances, duration, title, merge });
   if (outputPath) {

@@ -33,10 +33,14 @@ const res = (status, body) => ({
 // Фейковый API: счётчики вызовов + настраиваемая последовательность ответов поллинга.
 // pollScript — массив функций () => Promise<response> | throw; исчерпался → completed.
 function fakeApi(pollScript = []) {
-  const calls = { upload: 0, submit: 0, poll: 0 };
+  const calls = { upload: 0, submit: 0, poll: 0, submitBody: null };
   globalThis.fetch = async (url, opts = {}) => {
     if (url.endsWith('/upload')) { calls.upload++; return res(200, { upload_url: 'https://u' }); }
-    if (url.endsWith('/transcript') && opts.method === 'POST') { calls.submit++; return res(200, { id: 'job1' }); }
+    if (url.endsWith('/transcript') && opts.method === 'POST') {
+      calls.submit++;
+      calls.submitBody = JSON.parse(opts.body);
+      return res(200, { id: 'job1' });
+    }
     calls.poll++;
     const step = pollScript.shift();
     if (step) return step();
@@ -62,6 +66,21 @@ test('happy path: буквы A/B сохраняются, мс → сек, ров
   assert.equal(r.speakers, 2);
   assert.equal(calls.upload, 1);
   assert.equal(calls.submit, 1);
+});
+
+test('detectLanguage=true отправляет language_detection без language_code', async () => {
+  const calls = fakeApi();
+  await transcribeAssembly(audio, { ...OPTS, detectLanguage: true, lang: 'ru' });
+  assert.equal(calls.submitBody.language_detection, true);
+  assert.ok(!('language_code' in calls.submitBody));
+  assert.equal(calls.submitBody.speaker_labels, true);
+});
+
+test('detectLanguage=false отправляет явный language_code без language_detection', async () => {
+  const calls = fakeApi();
+  await transcribeAssembly(audio, { ...OPTS, detectLanguage: false, lang: 'en' });
+  assert.equal(calls.submitBody.language_code, 'en');
+  assert.ok(!('language_detection' in calls.submitBody));
 });
 
 test('транзиентные 5xx/сетевые сбои поллинга переживаются БЕЗ пересабмита job', async () => {
