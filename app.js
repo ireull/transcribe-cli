@@ -12,7 +12,7 @@ import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
 import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, cleanMeetName, renameDriveFile, driveRenameTarget } from './gdrive.js';
 import { summarizeTranscript } from './summarize.js';
-import { runUpgrade } from './upgrade.js';
+import { runUpgrade, checkForUpdate, getInstalledVersion, compareVersions } from './upgrade.js';
 
 // Ctrl+C внутри inquirer-промпта бросает ExitPromptError. Ловим его, чтобы
 // трактовать как «назад», а не «убить приложение».
@@ -115,9 +115,14 @@ async function handleDeepgramAuthError(cfg) {
 // ─── UI ─────────────────────────────────────────────────────────────
 
 function showHeader() {
+  const ver = getInstalledVersion();
+  const v = ver ? ` v${ver}` : '';
+  const left = `  transcribe${v}`;
+  const pad = ' '.repeat(Math.max(0, 32 - left.length));
+
   console.log();
   console.log(chalk.cyan('  ╭────────────────────────────────╮'));
-  console.log(chalk.cyan('  │') + chalk.bold.cyan('  transcribe') + chalk.cyan('                    │'));
+  console.log(chalk.cyan('  │') + chalk.bold.cyan('  transcribe') + chalk.dim(v) + pad + chalk.cyan('│'));
   console.log(chalk.cyan('  │') + chalk.dim('  Deepgram + yt-dlp + ffmpeg') + chalk.cyan('    │'));
   console.log(chalk.cyan('  ╰────────────────────────────────╯'));
   console.log();
@@ -140,6 +145,39 @@ async function yesNo(message, defaultYes = true) {
     ],
     default: defaultYes,
   });
+}
+
+async function maybeOfferUpdate(cfg) {
+  const now = Date.now();
+  const current = getInstalledVersion();
+  if (!current) return;
+
+  let latest = cfg.updateLatestSeen || '';
+  const stale = !cfg.updateLastCheck || (now - cfg.updateLastCheck) > 24 * 60 * 60 * 1000;
+  if (stale) {
+    const info = await checkForUpdate();
+    if (info?.latest) {
+      latest = info.latest;
+      cfg.updateLastCheck = now;
+      cfg.updateLatestSeen = latest;
+      saveConfig(cfg);
+    }
+  }
+
+  if (!latest || compareVersions(latest, current) <= 0) return;
+  console.log(chalk.cyan(`  ✨ Доступно обновление ${latest} (у вас ${current}).`));
+
+  let yes;
+  try {
+    yes = await yesNo('Обновить сейчас?', false);
+  } catch (e) {
+    if (isExitPrompt(e)) return;
+    throw e;
+  }
+  if (!yes) return;
+
+  const ok = await runUpgrade();
+  if (ok) process.exit(0);
 }
 
 // ─── Что делать с готовым результатом ───────────────────────────────
@@ -741,6 +779,7 @@ async function editSettings(cfg) {
 async function interactiveMenu() {
   showHeader();
   const cfg = loadConfig();
+  await maybeOfferUpdate(cfg);
   let apiKey = await ensureApiKey(cfg);
 
   while (true) {
@@ -822,6 +861,9 @@ export async function cli() {
   // Быстрый режим
   showHeader();
   const cfg = loadConfig();
+  if (cfg.updateLatestSeen && compareVersions(cfg.updateLatestSeen, getInstalledVersion()) > 0) {
+    console.log(chalk.dim(`  ✨ Доступно обновление ${cfg.updateLatestSeen} — transcribe upgrade`));
+  }
   const apiKey = getFlag(args, '--api-key') || cfg.apiKey || process.env.DEEPGRAM_API_KEY || '';
   if (!apiKey) { console.log(chalk.red('Нужен DEEPGRAM_API_KEY.')); process.exit(1); }
 

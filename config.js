@@ -24,6 +24,8 @@ const DEFAULTS = {
   numerals: true,          // числа цифрами (Deepgram numerals)
   lastOutputDir: '',
   lastOpenDir: '',
+  updateLastCheck: 0,
+  updateLatestSeen: '',
   apiKey: '',
   speakerNames: [],
   // Авто-саммари через Google Gemini (free-tier). Выкл по умолчанию;
