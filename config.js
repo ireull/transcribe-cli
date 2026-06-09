@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { copyFileSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 
@@ -44,8 +44,14 @@ const DEFAULTS = {
 };
 
 export function loadConfig() {
+  let raw;
   try {
-    const raw = readFileSync(CONFIG_PATH, 'utf-8');
+    raw = readFileSync(CONFIG_PATH, 'utf-8');
+  } catch (e) {
+    return { ...DEFAULTS };
+  }
+
+  try {
     const cfg = { ...DEFAULTS, ...JSON.parse(raw) };
     // Миграция: саммари переехало с OpenRouter на Gemini — старый слаг модели
     // (вида "qwen/...:free") на Gemini-эндпоинте даст 404, сбрасываем на дефолт.
@@ -54,15 +60,24 @@ export function loadConfig() {
     }
     return cfg;
   } catch {
+    const bak = `${CONFIG_PATH}.bak`;
+    try { copyFileSync(CONFIG_PATH, bak); } catch {}
+    console.error(`Конфиг повреждён, использую дефолты; бэкап: ${bak}`);
     return { ...DEFAULTS };
   }
 }
 
 export function saveConfig(cfg) {
+  let tmpPath = '';
   try {
     mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+    tmpPath = join(CONFIG_DIR, `.config.${process.pid}.${Date.now()}.tmp`);
+    writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    renameSync(tmpPath, CONFIG_PATH);
   } catch (e) {
+    if (tmpPath) {
+      try { rmSync(tmpPath, { force: true }); } catch {}
+    }
     if (e.code === 'EACCES') {
       const dir = e.path ? dirname(e.path) : CONFIG_DIR;
       const cmd = `sudo chown $(whoami) "${dir}"`;

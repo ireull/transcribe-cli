@@ -20,7 +20,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir, platform } from 'os';
 import { join, extname, dirname } from 'path';
-import { transcribeAssembly } from './assembly.js';
+import { transcribeAssembly, uploadAssembly } from './assembly.js';
 
 // Форматы, которые AssemblyAI/ffmpeg-апстрим принимают как аудио напрямую —
 // для них конвертация в opus не нужна.
@@ -143,6 +143,49 @@ export function assembleMarkdown({ utterances = [], duration = 0, title = '', sp
 // ─── Транскрипция ──────────────────────────────────────────────────────────
 
 /**
+ * Низкоуровневый шаг: файл → upload_url AssemblyAI.
+ * Конвертирует в opus при необходимости и заливает аудио один раз. Полезно для
+ * сценариев, где один и тот же upload_url переиспользуется для повторного submit
+ * с другим speakers_expected.
+ *
+ * @returns {Promise<{uploadUrl:string}>}
+ */
+export async function uploadForAssembly({
+  input,
+  apiKey = process.env.ASSEMBLYAI_API_KEY,
+  // Affects only the optional conversion inside this helper. CLI passes .opus
+  // after its own HQ conversion, so uploadForAssembly just uploads that file.
+  diarization = true,
+  uploadTimeoutMs,
+  retryAttempts,
+  retryBaseMs,
+  log = () => {},
+} = {}) {
+  if (!input) throw new Error('engine: не указан input (путь к медиафайлу)');
+  if (!existsSync(input)) throw new Error(`engine: файл не найден: ${input}`);
+  if (!apiKey) throw new Error('engine: нужен ключ AssemblyAI (apiKey или ASSEMBLYAI_API_KEY)');
+
+  const tmp = mkdtempSync(join(tmpdir(), 'tx-engine-'));
+  try {
+    let audioPath = input;
+    if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
+      log('конвертация в opus');
+      audioPath = convertToOpus(audioPath, tmp, { hq: diarization });
+    }
+    const uploadUrl = await uploadAssembly(audioPath, {
+      apiKey,
+      log,
+      ...(uploadTimeoutMs != null ? { uploadTimeoutMs } : {}),
+      ...(retryAttempts != null ? { retryAttempts } : {}),
+      ...(retryBaseMs != null ? { retryBaseMs } : {}),
+    });
+    return { uploadUrl };
+  } finally {
+    try { rmSync(tmp, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
  * Низкоуровневый шаг: файл → реплики с диаризацией (AssemblyAI).
  * Конвертирует в opus при необходимости, заливает, диаризует, опрашивает статус.
  * Возвращает реплики с метками спикеров A/B/C. НЕ пишет файлов, НЕ форматирует Markdown.
@@ -152,6 +195,7 @@ export function assembleMarkdown({ utterances = [], duration = 0, title = '', sp
  */
 export async function transcribeToUtterances({
   input,
+  uploadUrl = '',
   lang = 'ru',
   detectLanguage = false,
   diarization = true,
@@ -159,11 +203,33 @@ export async function transcribeToUtterances({
   apiKey = process.env.ASSEMBLYAI_API_KEY,
   pollIntervalMs,
   pollTimeoutMs,
+  uploadTimeoutMs,
+  submitTimeoutMs,
+  retryAttempts,
+  retryBaseMs,
   log = () => {},
 } = {}) {
-  if (!input) throw new Error('engine: не указан input (путь к медиафайлу)');
-  if (!existsSync(input)) throw new Error(`engine: файл не найден: ${input}`);
+  if (!uploadUrl && !input) throw new Error('engine: не указан input (путь к медиафайлу)');
+  if (!uploadUrl && !existsSync(input)) throw new Error(`engine: файл не найден: ${input}`);
   if (!apiKey) throw new Error('engine: нужен ключ AssemblyAI (apiKey или ASSEMBLYAI_API_KEY)');
+
+  if (uploadUrl) {
+    log('диаризация');
+    const result = await transcribeAssembly(input, {
+      apiKey,
+      lang,
+      detectLanguage,
+      speakersExpected,
+      uploadUrl,
+      ...(pollIntervalMs != null ? { pollIntervalMs } : {}),
+      ...(pollTimeoutMs != null ? { pollTimeoutMs } : {}),
+      ...(submitTimeoutMs != null ? { submitTimeoutMs } : {}),
+      ...(retryAttempts != null ? { retryAttempts } : {}),
+      ...(retryBaseMs != null ? { retryBaseMs } : {}),
+      log,
+    });
+    return { utterances: result.utterances, duration: result.duration, speakers: result.speakers };
+  }
 
   // Свой временный каталог под конвертацию; чистим в finally. Глобальные
   // обработчики сигналов НЕ ставим — библиотека не должна звать process.exit
@@ -184,6 +250,10 @@ export async function transcribeToUtterances({
       // Поллинг-ручки пробрасываем только если заданы — дефолты живут в assembly.js.
       ...(pollIntervalMs != null ? { pollIntervalMs } : {}),
       ...(pollTimeoutMs != null ? { pollTimeoutMs } : {}),
+      ...(uploadTimeoutMs != null ? { uploadTimeoutMs } : {}),
+      ...(submitTimeoutMs != null ? { submitTimeoutMs } : {}),
+      ...(retryAttempts != null ? { retryAttempts } : {}),
+      ...(retryBaseMs != null ? { retryBaseMs } : {}),
       log,
     });
     return { utterances: result.utterances, duration: result.duration, speakers: result.speakers };

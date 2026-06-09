@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { cleanMeetName, formatSize, renameDriveFile, driveRenameTarget } from '../gdrive.js';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { Readable } from 'stream';
+import { cleanMeetName, formatSize, renameDriveFile, driveRenameTarget, downloadFile } from '../gdrive.js';
 
 test('cleanMeetName: осмысленное имя — чистится, дата нормализуется', () => {
   const r = cleanMeetName('Planning & Status check - 2026/06/01 15:30 CEST – Recording 2');
@@ -78,4 +82,43 @@ test('driveRenameTarget: точки в имени исходника не счи
 
 test('driveRenameTarget: имя уже совпадает — null', () => {
   assert.equal(driveRenameTarget('/out/Team sync.md', 'Team sync'), null);
+});
+
+test('downloadFile: успех пишет финальный файл и убирает .part', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gdrive-ok-'));
+  const drive = {
+    files: {
+      get: async () => ({ data: Readable.from(['hello']) }),
+    },
+  };
+  try {
+    const out = await downloadFile(drive, 'id', 'meet.mp4', dir);
+    assert.equal(readFileSync(out, 'utf-8'), 'hello');
+    assert.equal(existsSync(`${out}.part`), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('downloadFile: ошибка stream удаляет .part и пробрасывается', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gdrive-fail-'));
+  const drive = {
+    files: {
+      get: async () => ({
+        data: new Readable({
+          read() {
+            this.destroy(new Error('stream boom'));
+          },
+        }),
+      }),
+    },
+  };
+  const out = join(dir, 'broken.mp4');
+  try {
+    await assert.rejects(() => downloadFile(drive, 'id', 'broken.mp4', dir), /stream boom/);
+    assert.equal(existsSync(`${out}.part`), false);
+    assert.equal(existsSync(out), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

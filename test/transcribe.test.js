@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   formatTs, sanitizeFilename, isUrl, getSpeakerPreviews,
   formatMarkdown, buildDeepgramParams, opusEncodeArgs,
+  runTranscription, callDeepgram,
 } from '../transcribe.js';
 
 test('formatTs: mm:ss и h:mm:ss', () => {
@@ -112,4 +116,137 @@ test('opusEncodeArgs: обычный — 32k mono', () => {
   const lo = opusEncodeArgs(false);
   assert.match(lo, /-b:a 32k/);
   assert.match(lo, /-ac 1/);
+});
+
+const httpResp = (status, body = {}) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  statusText: String(status),
+  json: async () => body,
+  text: async () => JSON.stringify(body),
+  headers: { get: () => null },
+});
+
+async function drainBody(body) {
+  if (!body?.[Symbol.asyncIterator]) return;
+  for await (const _ of body) {}
+}
+
+test('runTranscription: isAuthError пробрасывается наружу', async () => {
+  const orig = globalThis.fetch;
+  const dir = mkdtempSync(join(tmpdir(), 'tx-run-auth-'));
+  const audio = join(dir, 'a.opus');
+  writeFileSync(audio, 'audio');
+  globalThis.fetch = async (_url, opts = {}) => {
+    await drainBody(opts.body);
+    return httpResp(401, { message: 'bad key' });
+  };
+  try {
+    await assert.rejects(
+      () => runTranscription(audio, {
+        speakers: false,
+        lang: 'ru',
+        apiKey: 'bad',
+        outputDir: dir,
+        quiet: true,
+      }),
+      e => e?.isAuthError === true && /Deepgram/.test(e.message)
+    );
+  } finally {
+    globalThis.fetch = orig;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runTranscription: прочие ошибки возвращают null', async () => {
+  const orig = globalThis.fetch;
+  const dir = mkdtempSync(join(tmpdir(), 'tx-run-null-'));
+  const audio = join(dir, 'a.opus');
+  writeFileSync(audio, 'audio');
+  globalThis.fetch = async (_url, opts = {}) => {
+    await drainBody(opts.body);
+    return httpResp(402, { message: 'no balance' });
+  };
+  try {
+    const out = await runTranscription(audio, {
+      speakers: false,
+      lang: 'ru',
+      apiKey: 'k',
+      outputDir: dir,
+      quiet: true,
+    });
+    assert.equal(out, null);
+  } finally {
+    globalThis.fetch = orig;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('callDeepgram: retry 503 → 200 и stream upload с Content-Length', async () => {
+  const orig = globalThis.fetch;
+  const dir = mkdtempSync(join(tmpdir(), 'tx-dg-retry-'));
+  const audio = join(dir, 'a.opus');
+  writeFileSync(audio, 'audio-bytes');
+  let calls = 0;
+  const bodies = [];
+  globalThis.fetch = async (_url, opts = {}) => {
+    calls++;
+    bodies.push(opts.body);
+    assert.equal(opts.headers['Content-Length'], '11');
+    assert.equal(opts.duplex, 'half');
+    assert.equal(typeof opts.body?.pipe, 'function');
+    await drainBody(opts.body);
+    if (calls === 1) return httpResp(503, { message: 'busy' });
+    return httpResp(200, { results: { channels: [] } });
+  };
+  try {
+    const r = await callDeepgram(audio, {
+      model: 'nova-3',
+      lang: 'ru',
+      autoLang: false,
+      speakers: false,
+      numerals: true,
+      apiKey: 'k',
+      retryAttempts: 2,
+      retryBaseMs: 0,
+    });
+    assert.deepEqual(r, { results: { channels: [] } });
+    assert.equal(calls, 2);
+    assert.notEqual(bodies[0], bodies[1], 'на retry нужен новый stream');
+  } finally {
+    globalThis.fetch = orig;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('callDeepgram: 401 → isAuthError без retry', async () => {
+  const orig = globalThis.fetch;
+  const dir = mkdtempSync(join(tmpdir(), 'tx-dg-auth-'));
+  const audio = join(dir, 'a.opus');
+  writeFileSync(audio, 'audio');
+  let calls = 0;
+  globalThis.fetch = async (_url, opts = {}) => {
+    calls++;
+    await drainBody(opts.body);
+    return httpResp(401, { message: 'bad key' });
+  };
+  try {
+    await assert.rejects(
+      () => callDeepgram(audio, {
+        model: 'nova-3',
+        lang: 'ru',
+        autoLang: false,
+        speakers: false,
+        numerals: true,
+        apiKey: 'bad',
+        retryAttempts: 3,
+        retryBaseMs: 0,
+      }),
+      e => e?.isAuthError === true && e?.provider === 'deepgram'
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = orig;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

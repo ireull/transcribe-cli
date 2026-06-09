@@ -84,3 +84,14 @@ test('summarizeTranscript: сетевая ошибка → бросает', asyn
     await assert.rejects(() => summarizeTranscript(LONG, { apiKey: 'k', retryDelays: [0, 0, 0] }), /Gemini|сеть/i);
   } finally { globalThis.fetch = orig; }
 });
+
+test('summarizeTranscript: AbortError → понятный timeout', async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }); };
+  try {
+    await assert.rejects(
+      () => summarizeTranscript(LONG, { apiKey: 'k', retryDelays: [0, 0, 0] }),
+      /таймаут запроса к Gemini/
+    );
+  } finally { globalThis.fetch = orig; }
+});

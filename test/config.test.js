@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -46,10 +46,31 @@ test('loadConfig: миграция старой OpenRouter-модели → Gemi
   assert.equal(cfg.summaryModel, 'gemini-3.5-flash');  // слаг с "/" сброшен на дефолт
 });
 
-test('loadConfig: битый JSON → дефолты, не падает', () => {
+test('loadConfig: битый JSON → дефолты, .bak и предупреждение', () => {
   writeFileSync(CONFIG_PATH, '{ это не json', 'utf-8');
-  const cfg = loadConfig();
-  assert.equal(cfg.autoLang, true);
+  let warning = '';
+  const orig = console.error;
+  console.error = (msg) => { warning += msg; };
+  try {
+    const cfg = loadConfig();
+    assert.equal(cfg.autoLang, true);
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(existsSync(`${CONFIG_PATH}.bak`), true);
+  assert.equal(readFileSync(`${CONFIG_PATH}.bak`, 'utf-8'), '{ это не json');
+  assert.match(warning, /Конфиг повреждён/);
+  assert.match(warning, /\.bak/);
+});
+
+test('saveConfig: атомарная запись создаёт файл с mode 0600', () => {
+  rmSync(CONFIG_PATH, { force: true });
+  saveConfig({ ...loadConfig(), apiKey: 'atomic' });
+  const back = loadConfig();
+  assert.equal(back.apiKey, 'atomic');
+  assert.equal(statSync(CONFIG_PATH).mode & 0o777, 0o600);
+  const leftovers = readdirSync(join(TMP, 'transcribe-cli')).filter(name => name.endsWith('.tmp'));
+  assert.deepEqual(leftovers, []);
 });
 
 test.after(() => rmSync(TMP, { recursive: true, force: true }));

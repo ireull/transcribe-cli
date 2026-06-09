@@ -1,19 +1,21 @@
 import { execFileSync } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, rmSync } from 'fs';
+import { createReadStream, readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, rmSync } from 'fs';
 import { tmpdir, platform } from 'os';
 import { join, basename, extname } from 'path';
 import { randomBytes } from 'crypto';
 import chalk from 'chalk';
 import ora from 'ora';
 import {
-  DIRECT_AUDIO, MIME_MAP, convertToOpus, assembleMarkdown, transcribeToUtterances,
+  DIRECT_AUDIO, MIME_MAP, convertToOpus, assembleMarkdown, transcribeToUtterances, uploadForAssembly,
 } from './engine.js';
+import { fetchWithTimeout, withRetry } from './http.js';
 
 // Реэкспорт ядровых утилит — публичная поверхность transcribe.js не меняется
 // (их импортируют app.js и тесты). Единый источник — engine.js.
 export { formatTs, opusEncodeArgs } from './engine.js';
 
 const DEEPGRAM_API = 'https://api.deepgram.com/v1/listen';
+const DEEPGRAM_TIMEOUT_MS = 30 * 60000;
 
 // Централизованный реестр временных директорий: чтобы при SIGINT/SIGTERM/exit
 // мы могли вычистить ВСЕ активные tmp, а не только ту, которую "видит" конкретная
@@ -93,7 +95,9 @@ function getVideoTitle(url) {
 }
 
 function downloadAudio(url, tmp) {
-  if (!checkBin('yt-dlp', 'pip install yt-dlp')) process.exit(1);
+  if (!checkBin('yt-dlp', 'pip install yt-dlp')) {
+    throw new Error('yt-dlp не найден. Установите: pip install yt-dlp');
+  }
   const out = join(tmp, 'audio.%(ext)s');
   try {
     // opus вместо wav: файл в ~10× меньше, Deepgram его жуёт напрямую (он в DIRECT_AUDIO),
@@ -140,24 +144,38 @@ export function buildDeepgramParams({ model = 'nova-3', lang, autoLang, speakers
   return params;
 }
 
-async function callDeepgram(filePath, { model, lang, autoLang, speakers, numerals, apiKey }) {
+export async function callDeepgram(filePath, {
+  model, lang, autoLang, speakers, numerals, apiKey,
+  timeoutMs = DEEPGRAM_TIMEOUT_MS,
+  retryAttempts = 3,
+  retryBaseMs = 1000,
+}) {
   const ext = extname(filePath).toLowerCase();
-  const body = readFileSync(filePath);
+  const size = statSync(filePath).size;
   const params = buildDeepgramParams({ model, lang, autoLang, speakers, numerals });
 
   let resp;
   try {
-    resp = await fetch(`${DEEPGRAM_API}?${params}`, {
-      method: 'POST',
-      headers: { Authorization: `Token ${apiKey}`, 'Content-Type': MIME_MAP[ext] || 'application/octet-stream' },
-      body,
-    });
+    resp = await withRetry(
+      () => fetchWithTimeout(`${DEEPGRAM_API}?${params}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Token ${apiKey}`,
+          'Content-Type': MIME_MAP[ext] || 'application/octet-stream',
+          'Content-Length': String(size),
+        },
+        body: createReadStream(filePath),
+        duplex: 'half',
+      }, { timeoutMs, service: 'Deepgram' }),
+      { attempts: retryAttempts, baseMs: retryBaseMs }
+    );
   } catch (e) {
+    if (e.isTimeout) throw e;
     // Node fetch (undici) бросает голое "fetch failed" — реальная причина в e.cause.
     // Без этого пользователь видит загадочный текст без шансов на диагностику.
     const cause = e.cause || {};
     const detail = cause.code || cause.message || '';
-    const sizeMb = (body.length / 1048576).toFixed(1);
+    const sizeMb = (size / 1048576).toFixed(1);
     if (detail) throw new Error(`Сеть упала при отправке в Deepgram (${sizeMb} MB): ${detail}`);
     throw new Error(`Сеть упала при отправке в Deepgram (${sizeMb} MB): ${e.message}`);
   }
@@ -167,6 +185,7 @@ async function callDeepgram(filePath, { model, lang, autoLang, speakers, numeral
     if (resp.status === 401 || resp.status === 403) {
       const e = new Error(`Deepgram: неверный API-ключ или он деактивирован (${resp.status})`);
       e.isAuthError = true;
+      e.provider = 'deepgram';
       throw e;
     }
     if (resp.status === 402) throw new Error('Deepgram: закончился баланс. Пополните на console.deepgram.com');
@@ -295,6 +314,13 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
         spinner.succeed('Сконвертировано в opus');
         spinner.start();
       }
+      spinner.text = chalk.cyan('AssemblyAI: загружаю аудио...');
+      const { uploadUrl } = await uploadForAssembly({
+        input: audioPath,
+        apiKey: assemblyKey,
+        log: m => { spinner.text = chalk.cyan(`AssemblyAI: ${m}`); },
+      });
+      spinner.succeed('AssemblyAI: аудио загружено');
       // Цикл числа спикеров — ИНТЕРАКТИВНАЯ обёртка CLI поверх ядра:
       // показали → не то → пересчитали со speakers_expected. Само ядро ввода не ждёт.
       let forceN = numSpeakers, result;
@@ -302,7 +328,7 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
         spinner.text = chalk.cyan(forceN > 0 ? `AssemblyAI (${forceN} спикеров)...` : 'AssemblyAI (транскрипт + спикеры)...');
         spinner.start();
         result = await transcribeToUtterances({
-          input: audioPath, lang, detectLanguage: autoLang, diarization: true,
+          uploadUrl, lang, detectLanguage: autoLang, diarization: true,
           speakersExpected: forceN, apiKey: assemblyKey,
           log: m => { spinner.text = chalk.cyan(`AssemblyAI: ${m}`); },
         });
@@ -389,6 +415,7 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
     return outPath;
   } catch (e) {
     spinner.fail(chalk.red(e.message));
+    if (e.isAuthError) throw e;
     return null;
   } finally {
     cleanTmp(tmp);

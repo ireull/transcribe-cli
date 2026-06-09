@@ -112,6 +112,28 @@ async function handleDeepgramAuthError(cfg) {
   return null;
 }
 
+async function handleAssemblyAuthError(cfg) {
+  console.log();
+  console.log(chalk.yellow('  Ключ AssemblyAI невалидный или закончился.'));
+  const action = await select({
+    message: 'Что делаем?',
+    choices: [
+      { name: '🔑  Ввести новый ключ', value: 'new' },
+      { name: '↩️   Назад', value: 'back' },
+    ],
+  });
+  if (action === 'new') {
+    const k = await input({ message: 'Новый API-ключ AssemblyAI:' });
+    if (k.trim()) {
+      cfg.assemblyKey = k.trim();
+      saveConfig(cfg);
+      console.log(chalk.green('  Сохранено. Попробуйте снова.'));
+      return k.trim();
+    }
+  }
+  return null;
+}
+
 // ─── UI ─────────────────────────────────────────────────────────────
 
 function showHeader() {
@@ -230,6 +252,26 @@ async function ensureApiKey(cfg) {
     console.log(chalk.green('Ключ сохранен.'));
   }
   return key.trim();
+}
+
+async function ensureProviderKey(cfg) {
+  if ((cfg.provider || 'deepgram') === 'assembly') {
+    if (!cfg.assemblyKey) {
+      console.log(chalk.yellow('Для AssemblyAI задайте ключ в Настройках → Провайдер'));
+      return { ok: false, apiKey: '' };
+    }
+    return { ok: true, apiKey: '' };
+  }
+  return { ok: true, apiKey: await ensureApiKey(cfg) };
+}
+
+function transcriptionOptionsFromConfig(cfg, { diarCount = true } = {}) {
+  const opts = optionsFromConfig(cfg);
+  opts.summarize = buildSummarizeCb(cfg);
+  opts.provider = cfg.provider || 'deepgram';
+  opts.assemblyKey = cfg.assemblyKey;
+  if (diarCount) opts.onDiarCount = cfg.provider === 'assembly' ? askDiarCount : undefined;
+  return opts;
 }
 
 // ─── Опции ──────────────────────────────────────────────────────────
@@ -363,7 +405,10 @@ async function runBatchMode(apiKey, opts, cfg) {
   for (let i = 0; i < files.length; i++) {
     console.log(chalk.cyan(`── [${i+1}/${files.length}] ${basename(files[i])} ──`));
     try { if (await runTranscription(files[i], { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined })) anyOk = true; }
-    catch (e) { console.log(chalk.red(`  Ошибка: ${e.message}`)); }
+    catch (e) {
+      if (e.isAuthError) throw e;
+      console.log(chalk.red(`  Ошибка: ${e.message}`));
+    }
   }
   if (anyOk) await offerOpenFolder(outputDir);
   return anyOk;
@@ -400,7 +445,7 @@ async function maybeRenameDriveSource(drive, file, outPath) {
   }
 }
 
-async function runMeetMode(apiKey, cfg) {
+async function runMeetMode(apiKey, opts, cfg) {
   // Проверка SA-ключа — если нет, предлагаем импортировать
   if (!hasSaKey()) {
     console.log();
@@ -505,12 +550,7 @@ async function runMeetMode(apiKey, cfg) {
   if (!selectedFile) return;
 
   // Опции транскрипции — из конфига (менять: Настройки → Опции транскрипции).
-  const opts = optionsFromConfig(cfg);
   console.log(chalk.dim(`  Опции: ${optionsSummary(opts)} · менять: Настройки`));
-  opts.summarize = buildSummarizeCb(cfg);
-  opts.provider = cfg.provider || 'deepgram';
-  opts.assemblyKey = cfg.assemblyKey;
-  opts.onDiarCount = cfg.provider === 'assembly' ? askDiarCount : undefined;
   // Чистим авто-имя Meet; если оно дефолтное (код встречи) — имя возьмётся из саммари.
   const { clean, isGeneric } = cleanMeetName(selectedFile.name);
   opts.name = clean; opts.nameIsGeneric = isGeneric;
@@ -531,6 +571,7 @@ async function runMeetMode(apiKey, cfg) {
       await offerPostActions(out);
     }
   } catch (e) {
+    if (e.isAuthError) throw e;
     console.log(chalk.red(`  Ошибка: ${e.message}`));
   } finally {
     cleanTmp(tmpDir);
@@ -780,7 +821,7 @@ async function interactiveMenu() {
   showHeader();
   const cfg = loadConfig();
   await maybeOfferUpdate(cfg);
-  let apiKey = await ensureApiKey(cfg);
+  let apiKey = '';
 
   while (true) {
     console.clear();
@@ -812,23 +853,27 @@ async function interactiveMenu() {
         await editSettings(cfg);
         continue;
       }
-      if (mode === 'meet') {
-        produced = await runMeetMode(apiKey, cfg);
+      const key = await ensureProviderKey(cfg);
+      if (!key.ok) {
+        produced = null;
       } else {
-        const opts = optionsFromConfig(cfg);
-        console.log(chalk.dim(`  Опции: ${optionsSummary(opts)} · менять: Настройки`));
-        opts.summarize = buildSummarizeCb(cfg);
-        opts.provider = cfg.provider || 'deepgram';
-        opts.assemblyKey = cfg.assemblyKey;
-        opts.onDiarCount = cfg.provider === 'assembly' ? askDiarCount : undefined;
-        if (mode === 'file') produced = await runFileMode(apiKey, opts, cfg);
-        else if (mode === 'batch') produced = await runBatchMode(apiKey, opts, cfg);
-        else if (mode === 'url') produced = await runUrlMode(apiKey, opts, cfg);
+        apiKey = key.apiKey;
+        const opts = transcriptionOptionsFromConfig(cfg);
+        if (mode === 'meet') {
+          produced = await runMeetMode(apiKey, opts, cfg);
+        } else {
+          console.log(chalk.dim(`  Опции: ${optionsSummary(opts)} · менять: Настройки`));
+          if (mode === 'file') produced = await runFileMode(apiKey, opts, cfg);
+          else if (mode === 'batch') produced = await runBatchMode(apiKey, opts, cfg);
+          else if (mode === 'url') produced = await runUrlMode(apiKey, opts, cfg);
+        }
       }
     } catch (e) {
       if (e.isAuthError) {
-        const newKey = await handleDeepgramAuthError(cfg);
-        if (newKey) apiKey = newKey;
+        const newKey = e.provider === 'assembly'
+          ? await handleAssemblyAuthError(cfg)
+          : await handleDeepgramAuthError(cfg);
+        if (newKey && e.provider !== 'assembly') apiKey = newKey;
         continue;
       }
       // Ctrl+C на любом шаге под-флоу — не выход, а возврат в меню.
@@ -864,21 +909,42 @@ export async function cli() {
   if (cfg.updateLatestSeen && compareVersions(cfg.updateLatestSeen, getInstalledVersion()) > 0) {
     console.log(chalk.dim(`  ✨ Доступно обновление ${cfg.updateLatestSeen} — transcribe upgrade`));
   }
-  const apiKey = getFlag(args, '--api-key') || cfg.apiKey || process.env.DEEPGRAM_API_KEY || '';
-  if (!apiKey) { console.log(chalk.red('Нужен DEEPGRAM_API_KEY.')); process.exit(1); }
 
   const lang = getFlag(args, '-l') || getFlag(args, '--lang') || cfg.lang || 'ru';
   const speakers = args.includes('--no-speakers') ? false
     : (args.includes('-s') || args.includes('--speakers') || (cfg.speakers ?? true));
   const outputDir = getFlag(args, '-o') || getFlag(args, '--output-dir') || (isUrl(source) ? process.cwd() : dirname(resolve(source)));
 
-  await runTranscription(source, {
-    speakers, lang,
-    autoLang: false,                       // быстрый режим — язык явный (флаг/конфиг)
-    numerals: cfg.numerals !== false,
-    merge: cfg.mergeUtterances !== false,
-    apiKey, outputDir,
-  });
+  const opts = transcriptionOptionsFromConfig(cfg, { diarCount: false });
+  const apiKey = opts.provider === 'assembly'
+    ? ''
+    : (getFlag(args, '--api-key') || cfg.apiKey || process.env.DEEPGRAM_API_KEY || '');
+  if (opts.provider === 'assembly' && !opts.assemblyKey) {
+    console.log(chalk.red('Для AssemblyAI задайте ключ в Настройках → Провайдер'));
+    process.exitCode = 1;
+    return;
+  }
+  if (opts.provider !== 'assembly' && !apiKey) {
+    console.log(chalk.red('Нужен DEEPGRAM_API_KEY.'));
+    process.exitCode = 1;
+    return;
+  }
+
+  let out;
+  try {
+    out = await runTranscription(source, {
+      ...opts,
+      speakers,
+      lang,
+      autoLang: false,                       // быстрый режим — язык явный (флаг/конфиг)
+      apiKey,
+      outputDir,
+    });
+  } catch {
+    process.exitCode = 1;
+    return;
+  }
+  if (!out) process.exitCode = 1;
 }
 
 function getFlag(args, flag) {

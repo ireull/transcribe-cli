@@ -1,9 +1,11 @@
 import chalk from 'chalk';
+import { fetchWithTimeout, sleep } from './http.js';
 
 // Саммари через Google Gemini (free-tier). Русский саммаризирует отлично,
 // в отличие от Deepgram (там audio-intelligence только англ.). Ключ — бесплатно
 // на https://aistudio.google.com/app/apikey (карта не нужна).
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/models';
+const GEMINI_TIMEOUT_MS = 120000;
 
 // Транскрипт длинной встречи влезает в контекст Gemini Flash (1M токенов),
 // но совсем гигантское режем — саммари не нужен весь текст дословно.
@@ -34,14 +36,12 @@ export function parseSummary(text) {
   return { title: (lines[0] || '').slice(0, 80), paragraph: lines.slice(1).join(' ') || raw };
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 /**
  * Резюмирует транскрипт через Gemini. Возвращает { title, paragraph }.
  * Бросает Error при неудаче — вызывающий решает (в CLI: предупреждение и
  * сохранение без саммари). Ретраит только 429 (rate-limit) с бэкоффом.
  */
-export async function summarizeTranscript(text, { apiKey, model, retryDelays = [0, 2000, 5000] }) {
+export async function summarizeTranscript(text, { apiKey, model, retryDelays = [0, 2000, 5000], timeoutMs = GEMINI_TIMEOUT_MS }) {
   if (!apiKey) throw new Error('Нет ключа Gemini');
   const transcript = (text || '').slice(0, MAX_CHARS);
   if (transcript.replace(/\s/g, '').length < 30) {
@@ -61,16 +61,21 @@ export async function summarizeTranscript(text, { apiKey, model, retryDelays = [
     if (delay) await sleep(delay);
     let resp;
     try {
-      resp = await fetch(url, {
+      resp = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
         body,
-      });
+      }, { timeoutMs, service: 'Gemini' });
     } catch (e) {
+      if (e.isTimeout) throw e;
       lastErr = new Error(`Сеть упала при запросе к Gemini: ${e.cause?.code || e.message}`);
       continue;
     }
-    if (resp.status === 429) { lastErr = new Error('Gemini: лимит запросов (429)'); continue; }
+    if (resp.status === 429) {
+      await resp.text?.().catch(() => {});
+      lastErr = new Error('Gemini: лимит запросов (429)');
+      continue;
+    }
     if (resp.status === 401 || resp.status === 403) throw new Error(`Gemini: неверный ключ (${resp.status})`);
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));

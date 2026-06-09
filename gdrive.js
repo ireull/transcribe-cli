@@ -1,6 +1,6 @@
 import { drive as driveApi } from '@googleapis/drive';
 import { GoogleAuth } from 'google-auth-library';
-import { createWriteStream, existsSync, readFileSync, copyFileSync, mkdirSync } from 'fs';
+import { createWriteStream, existsSync, readFileSync, copyFileSync, mkdirSync, renameSync, rmSync } from 'fs';
 import { join, basename } from 'path';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -138,6 +138,7 @@ export async function listAllFiles(drive, limit = 500) {
 export async function downloadFile(drive, fileId, fileName, destDir) {
   const safeName = sanitizeFilename(fileName);
   const destPath = join(destDir, safeName);
+  const partPath = `${destPath}.part`;
 
   const spinner = ora({ text: chalk.cyan(`Скачиваю: ${safeName}...`), spinner: 'dots' }).start();
 
@@ -148,17 +149,22 @@ export async function downloadFile(drive, fileId, fileName, destDir) {
     );
 
     await new Promise((resolve, reject) => {
-      const dest = createWriteStream(destPath);
-      res.data
-        .on('error', reject)
-        .pipe(dest)
-        .on('finish', resolve)
-        .on('error', reject);
+      const dest = createWriteStream(partPath);
+      const fail = (err) => {
+        dest.destroy();
+        reject(err);
+      };
+      res.data.on('error', fail);
+      dest.on('error', fail);
+      dest.on('finish', resolve);
+      res.data.pipe(dest);
     });
 
+    renameSync(partPath, destPath);
     spinner.succeed(`Скачано: ${safeName}`);
     return destPath;
   } catch (e) {
+    try { rmSync(partPath, { force: true }); } catch {}
     spinner.fail(`Ошибка скачивания: ${e.message}`);
     throw e;
   }
