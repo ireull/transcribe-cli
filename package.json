@@ -1,6 +1,6 @@
 {
   "name": "@ireull/transcribe-cli",
-  "version": "1.18.0",
+  "version": "1.18.1",
   "description": "CLI для транскрипции через Deepgram/AssemblyAI + yt-dlp + ffmpeg",
   "type": "module",
   "bin": {

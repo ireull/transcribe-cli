@@ -77,6 +77,7 @@ export async function findMeetFolder(drive, folderName = 'Meet Recordings') {
     q: `mimeType = 'application/vnd.google-apps.folder' and name contains '${folderName}' and trashed = false`,
     fields: 'files(id, name)',
     pageSize: 20,
+    orderBy: 'createdTime',
     supportsAllDrives: true,
     includeItemsFromAllDrives: true,
   });
@@ -171,24 +172,55 @@ export async function downloadFile(drive, fileId, fileName, destDir) {
 }
 
 /**
+ * Объединяет списки записей из нескольких папок: дедуп по id,
+ * сортировка по createdTime desc (ISO-строки сортируются лексикографически),
+ * обрезка до limit.
+ */
+export function mergeRecordings(lists, limit) {
+  const seen = new Set();
+  const merged = [];
+  for (const list of lists) {
+    for (const item of list) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        merged.push(item);
+      }
+    }
+  }
+  merged.sort((a, b) => {
+    const ta = a.createdTime || '';
+    const tb = b.createdTime || '';
+    return tb < ta ? -1 : tb > ta ? 1 : 0;
+  });
+  return merged.slice(0, limit);
+}
+
+/**
+ * Собирает записи по переданному drive-клиенту (инжектируемый для тестов).
+ * Читает ВСЕ найденные папки Meet Recordings параллельно, дедуплицирует.
+ * Если папок нет — листает все файлы SA.
+ * Недоступная папка (403/5xx) не обрывает весь запрос — пропускается.
+ * Если папки есть, но ВСЕ отклонились — пробрасывает первую ошибку
+ * (чтобы isAuthError дошёл до app.js).
+ */
+export async function collectRecordings(drive, limit = 500) {
+  const folders = await findMeetFolder(drive);
+  if (folders.length === 0) return listAllFiles(drive, limit);
+  const results = await Promise.allSettled(
+    folders.map(f => listRecordings(drive, f.id, limit))
+  );
+  const fulfilled = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+  if (fulfilled.length === 0) throw results[0].reason;
+  return mergeRecordings(fulfilled, limit);
+}
+
+/**
  * Главная функция — получает Drive-клиент и список записей.
  * Возвращает { drive, files } или null при ошибке.
  */
 export async function getMeetRecordings({ limit = 500, write = false } = {}) {
   const drive = getDriveClient(write);
-
-  // Сначала ищем папку Meet Recordings
-  const folders = await findMeetFolder(drive);
-
-  let files;
-  if (folders.length > 0) {
-    // Берем первую найденную
-    files = await listRecordings(drive, folders[0].id, limit);
-  } else {
-    // Нет папки — листаем все доступные файлы
-    files = await listAllFiles(drive, limit);
-  }
-
+  const files = await collectRecordings(drive, limit);
   return { drive, files };
 }
 
