@@ -10,7 +10,7 @@ import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
 import { pickFile, pickFiles, pickFolder, pickJsonFile, openFile, revealFile, copyToClipboard } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
-import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, recordingName, describeRoots, renameDriveFile, driveRenameTarget } from './gdrive.js';
+import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, recordingName, describeRoots, describeCounts, renameDriveFile, driveRenameTarget } from './gdrive.js';
 import { summarizeTranscript } from './summarize.js';
 import { runUpgrade, checkForUpdate, getInstalledVersion, compareVersions } from './upgrade.js';
 
@@ -529,8 +529,25 @@ async function runMeetMode(apiKey, opts, cfg) {
   // «иван 06» найдёт встречу с Иваном в июне. Пустой ввод — все записи.
   const MAX_SHOWN = 50;
   const BACK = '__back__';
-  const labelOf = f => `${f.name}  ${chalk.dim(`(${formatSize(f.size)}, ${formatDate(f.createdTime)})`)}`;
-  const hayOf = f => `${f.name} ${formatDate(f.createdTime)}`.toLowerCase();
+
+  // Метка аккаунта-владельца (чей Диск) у каждой записи — только когда
+  // аккаунтов больше одного, для одного это шум. Цвет — по порядку появления,
+  // ширина выровнена, чтобы метки читались колонкой. Аккаунт входит и в
+  // строку поиска: «londeren 09» найдёт сентябрьские записи с этого аккаунта.
+  const accounts = [...new Set(files.map(f => f.account).filter(Boolean))];
+  const multiAccount = accounts.length > 1;
+  if (multiAccount) console.log(chalk.dim(`  Аккаунты: ${describeCounts(files.map(f => f.account).filter(Boolean))}`));
+  const palette = [chalk.cyan, chalk.magenta, chalk.yellow, chalk.green, chalk.blue, chalk.red];
+  const paint = new Map(accounts.map((a, i) => [a, palette[i % palette.length]]));
+  const tagWidth = Math.max(0, ...accounts.map(a => a.length)) + 2;
+  // Без owners (Shared Drive) — заглушка той же ширины, чтобы колонка не съезжала.
+  const tagOf = f => {
+    if (!multiAccount) return '';
+    if (!f.account) return `${chalk.dim('[?]'.padEnd(tagWidth))} `;
+    return `${paint.get(f.account)(`[${f.account}]`.padEnd(tagWidth))} `;
+  };
+  const labelOf = f => `${tagOf(f)}${f.name}  ${chalk.dim(`(${formatSize(f.size)}, ${formatDate(f.createdTime)})`)}`;
+  const hayOf = f => `${f.account || ''} ${f.name} ${formatDate(f.createdTime)}`.toLowerCase();
 
   const selectedId = await search({
     message: `Найдите запись (${files.length} шт. · печатайте для фильтра · ^C назад):`,

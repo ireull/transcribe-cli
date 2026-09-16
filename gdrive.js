@@ -76,7 +76,7 @@ function getDriveClient(write = false) {
 export const MEET_ROOT_NAMES = ['Google Meet', 'Meet Recordings', 'Legacy Meet Recordings'];
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const SHORTCUT_MIME = 'application/vnd.google-apps.shortcut';
-const FILE_FIELDS = 'id, name, size, createdTime, mimeType, parents, shortcutDetails(targetId, targetMimeType)';
+const FILE_FIELDS = 'id, name, size, createdTime, mimeType, parents, owners(emailAddress), shortcutDetails(targetId, targetMimeType)';
 const isMedia = (mime) => /^(video|audio)\//.test(mime || '');
 
 /**
@@ -165,7 +165,7 @@ async function resolveShortcutTargets(drive, shortcuts, batch = 20) {
   const out = [];
   for (let i = 0; i < shortcuts.length; i += batch) {
     const results = await Promise.allSettled(shortcuts.slice(i, i + batch).map(async s => {
-      const r = await drive.files.get({ fileId: s.id, fields: 'id, name, size, createdTime, mimeType', supportsAllDrives: true });
+      const r = await drive.files.get({ fileId: s.id, fields: 'id, name, size, createdTime, mimeType, owners(emailAddress)', supportsAllDrives: true });
       return { ...s, ...r.data };
     }));
     for (const r of results) if (r.status === 'fulfilled') out.push(r.value);
@@ -296,7 +296,31 @@ export async function collectRecordings(drive, limit = 500) {
   const real = files.filter(f => !f.shortcutId);
   const realIds = new Set(real.map(f => f.id));
   const shortcuts = await resolveShortcutTargets(drive, files.filter(f => f.shortcutId && !realIds.has(f.id)));
-  return { files: mergeRecordings([real, shortcuts], limit), roots };
+  // `account` — чей это Диск: запись Meet принадлежит аккаунту организатора
+  // (у ярлыка — владелец цели, он уже дочитан). На Shared Drive owners нет.
+  const withAccount = mergeRecordings([real, shortcuts], limit)
+    .map(f => ({ ...f, account: accountLabel(f.owners?.[0]?.emailAddress) }));
+  return { files: withAccount, roots };
+}
+
+/**
+ * Короткая метка аккаунта для UI: у gmail — только имя ящика («londeren»),
+ * у доменных аккаунтов — весь адрес, чтобы «vadim@a.com» и «vadim@b.com» не
+ * слипались. Без email — пустая строка.
+ */
+export function accountLabel(email) {
+  const m = String(email || '').toLowerCase().match(/^([^@]+)@(gmail|googlemail)\.com$/);
+  return m ? m[1] : String(email || '');
+}
+
+/**
+ * Сводка «имя ×N» по списку строк, в порядке первого появления:
+ * ['a','b','a'] → «a ×2, b ×1».
+ */
+export function describeCounts(names) {
+  const counts = new Map();
+  for (const n of names) counts.set(n, (counts.get(n) || 0) + 1);
+  return [...counts].map(([name, n]) => `${name} ×${n}`).join(', ');
 }
 
 /**
@@ -321,9 +345,7 @@ export function recordingName(file) {
  * Сводка по найденным корневым папкам для UI: «Google Meet ×1, Meet Recordings ×2».
  */
 export function describeRoots(roots) {
-  const counts = new Map();
-  for (const r of roots) counts.set(r.name, (counts.get(r.name) || 0) + 1);
-  return [...counts].map(([name, n]) => `${name} ×${n}`).join(', ');
+  return describeCounts(roots.map(r => r.name));
 }
 
 /**

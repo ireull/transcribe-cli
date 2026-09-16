@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Readable } from 'stream';
-import { cleanMeetName, formatSize, renameDriveFile, driveRenameTarget, downloadFile, mergeRecordings, collectRecordings, recordingName, describeRoots } from '../gdrive.js';
+import { cleanMeetName, formatSize, renameDriveFile, driveRenameTarget, downloadFile, mergeRecordings, collectRecordings, recordingName, describeRoots, describeCounts, accountLabel } from '../gdrive.js';
 
 test('cleanMeetName: осмысленное имя — чистится, дата нормализуется', () => {
   const r = cleanMeetName('Planning & Status check - 2026/06/01 15:30 CEST – Recording 2');
@@ -335,6 +335,35 @@ test('recordingName: осмысленное имя файла — папка н�
 
 test('recordingName: без folderName (старая схема) — как cleanMeetName', () => {
   assert.deepEqual(recordingName({ name: 'bbb-tupg-phm (2026-05-26 20:02 GMT+2)' }), cleanMeetName('bbb-tupg-phm (2026-05-26 20:02 GMT+2)'));
+});
+
+test('collectRecordings: account — владелец файла; у ярлыка — владелец цели; без owners — пусто', async () => {
+  const drive = mockDrive({
+    roots: [{ id: 'f1', name: 'Meet Recordings' }],
+    media: [
+      rec('own', 'f1', '2026-09-12T10:00:00Z', { owners: [{ emailAddress: 'londeren@gmail.com' }] }),
+      { id: 'sc', name: 'Shortcut', createdTime: '2026-09-12T09:00:00Z', mimeType: SHORTCUT, parents: ['f1'],
+        owners: [{ emailAddress: 'participant@gmail.com' }], shortcutDetails: { targetId: 'T', targetMimeType: 'video/mp4' } },
+      rec('shared-drive', 'f1', '2026-09-12T08:00:00Z'),
+    ],
+    targets: { T: { id: 'T', name: 'Target', size: '1', createdTime: '2026-09-12T07:00:00Z', mimeType: 'video/mp4', owners: [{ emailAddress: 'host@company.com' }] } },
+  });
+
+  const { files } = await collectRecordings(drive, 500);
+  // Порядок — по createdTime desc, у ярлыка это дата ЦЕЛИ (07:00, самая старая).
+  assert.deepEqual(files.map(f => [f.id, f.account]), [['own', 'londeren'], ['shared-drive', ''], ['T', 'host@company.com']]);
+});
+
+test('accountLabel: gmail — имя ящика, домен — весь адрес, пусто — пусто', () => {
+  assert.equal(accountLabel('Londeren@gmail.com'), 'londeren');
+  assert.equal(accountLabel('thegrowglobal.pro@googlemail.com'), 'thegrowglobal.pro');
+  assert.equal(accountLabel('vadim@company.com'), 'vadim@company.com');
+  assert.equal(accountLabel(undefined), '');
+});
+
+test('describeCounts: считает в порядке первого появления', () => {
+  assert.equal(describeCounts(['londeren', 'grow', 'londeren']), 'londeren ×2, grow ×1');
+  assert.equal(describeCounts([]), '');
 });
 
 test('describeRoots: группирует по имени', () => {
