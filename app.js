@@ -10,7 +10,7 @@ import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
 import { pickFile, pickFiles, pickFolder, pickJsonFile, openFile, revealFile, copyToClipboard } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
 import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
-import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, cleanMeetName, renameDriveFile, driveRenameTarget } from './gdrive.js';
+import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, recordingName, describeRoots, renameDriveFile, driveRenameTarget } from './gdrive.js';
 import { summarizeTranscript } from './summarize.js';
 import { runUpgrade, checkForUpdate, getInstalledVersion, compareVersions } from './upgrade.js';
 
@@ -469,7 +469,7 @@ async function runMeetMode(apiKey, opts, cfg) {
       console.log(chalk.dim('  2. Включить Google Drive API'));
       console.log(chalk.dim('  3. IAM → Service Accounts → создать SA'));
       console.log(chalk.dim('  4. Скачать JSON-ключ'));
-      console.log(chalk.dim('  5. Расшарить папку Meet Recordings на email SA'));
+      console.log(chalk.dim('  5. Расшарить папки «Google Meet» и «Meet Recordings» на email SA'));
       console.log(chalk.dim('  6. Затем: transcribe → Meet → выбрать файл ключа'));
       console.log();
       return;
@@ -491,7 +491,7 @@ async function runMeetMode(apiKey, opts, cfg) {
 
       console.log(chalk.green(`  ✓ SA-ключ установлен (${result.email})`));
       console.log(chalk.dim(`    Скопирован в: ${getSaKeyPath()}`));
-      console.log(chalk.dim(`    Расшарьте папку Meet Recordings на: ${result.email}`));
+      console.log(chalk.dim(`    Расшарьте папки «Google Meet» и «Meet Recordings» на: ${result.email}`));
       console.log();
       // Не return — продолжаем к списку записей
     }
@@ -500,17 +500,26 @@ async function runMeetMode(apiKey, opts, cfg) {
   console.log();
   const spinner = ora({ text: chalk.cyan('Загружаю список записей...'), spinner: 'dots' }).start();
 
-  let drive, files;
+  let drive, files, roots;
   try {
-    ({ drive, files } = await getMeetRecordings({ write: cfg.renameDriveSource }));
-    spinner.succeed(`Найдено записей: ${files.length}`);
+    ({ drive, files, roots } = await getMeetRecordings({ write: cfg.renameDriveSource }));
+    const where = roots.length ? chalk.dim(` · папки: ${describeRoots(roots)}`) : '';
+    spinner.succeed(`Найдено записей: ${files.length}${where}`);
   } catch (e) {
     spinner.fail(chalk.red(`Ошибка: ${e.message}`));
     return;
   }
 
+  // С июля 2026 Meet кладёт новые записи в «Google Meet» (подпапка на встречу),
+  // а не в «Meet Recordings». Если такой папки SA не видит — свежих записей в
+  // списке не будет, и это надо сказать явно, а не показывать «протухший» список.
+  if (!roots.some(r => r.name === 'Google Meet')) {
+    console.log(chalk.dim('  Папка «Google Meet» не найдена — с июля 2026 Meet сохраняет новые записи туда.'));
+    console.log(chalk.dim('  Если свежих записей нет в списке — расшарьте её на SA.'));
+  }
+
   if (files.length === 0) {
-    console.log(chalk.yellow('  Записей не найдено. Проверьте, расшарена ли папка на SA.'));
+    console.log(chalk.yellow('  Записей не найдено. Проверьте, расшарены ли на SA папки «Google Meet» и «Meet Recordings».'));
     return;
   }
 
@@ -551,8 +560,9 @@ async function runMeetMode(apiKey, opts, cfg) {
 
   // Опции транскрипции — из конфига (менять: Настройки → Опции транскрипции).
   console.log(chalk.dim(`  Опции: ${optionsSummary(opts)} · менять: Настройки`));
-  // Чистим авто-имя Meet; если оно дефолтное (код встречи) — имя возьмётся из саммари.
-  const { clean, isGeneric } = cleanMeetName(selectedFile.name);
+  // Чистим авто-имя Meet (файл или, если файл назван кодом встречи, папка
+  // встречи); если и там дефолт — имя возьмётся из саммари.
+  const { clean, isGeneric } = recordingName(selectedFile);
   opts.name = clean; opts.nameIsGeneric = isGeneric;
 
   // Куда сохранить
@@ -767,7 +777,7 @@ async function editSettings(cfg) {
       const result = importSaKey(keyFile);
       if (result.ok) {
         console.log(chalk.green(`  ✓ SA-ключ установлен (${result.email})`));
-        console.log(chalk.dim(`    Расшарьте папку Meet Recordings на: ${result.email}`));
+        console.log(chalk.dim(`    Расшарьте папки «Google Meet» и «Meet Recordings» на: ${result.email}`));
       } else {
         console.log(chalk.red(`  Ошибка: ${result.error}`));
       }

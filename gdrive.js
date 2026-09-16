@@ -68,15 +68,28 @@ function getDriveClient(write = false) {
   return driveApi({ version: 'v3', auth });
 }
 
+// Корневые папки Meet на Диске. «Meet Recordings» — старая плоская схема (до
+// июля 2026 все записи лежали в ней одним списком). «Google Meet» — новая:
+// внутри подпапка на каждую встречу (повторяющиеся делят одну), а старую папку
+// Google переносит внутрь как «Legacy Meet Recordings». Спец-маркеров
+// (appProperties/mimeType) у этих папок нет — опознаём только по имени.
+export const MEET_ROOT_NAMES = ['Google Meet', 'Meet Recordings', 'Legacy Meet Recordings'];
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const SHORTCUT_MIME = 'application/vnd.google-apps.shortcut';
+const FILE_FIELDS = 'id, name, size, createdTime, mimeType, parents, shortcutDetails(targetId, targetMimeType)';
+const isMedia = (mime) => /^(video|audio)\//.test(mime || '');
+
 /**
- * Ищет папку Meet Recordings (или по имени).
+ * Ищет корневые папки Meet (см. MEET_ROOT_NAMES): точные имена плюс
+ * `contains 'Meet Recordings'` — для старых папок, переименованных руками.
  * SA видит только то, что ему расшарили.
  */
-export async function findMeetFolder(drive, folderName = 'Meet Recordings') {
+export async function findMeetFolders(drive) {
+  const exact = MEET_ROOT_NAMES.map(n => `name = '${n}'`).join(' or ');
   const res = await drive.files.list({
-    q: `mimeType = 'application/vnd.google-apps.folder' and name contains '${folderName}' and trashed = false`,
+    q: `mimeType = '${FOLDER_MIME}' and trashed = false and (${exact} or name contains 'Meet Recordings')`,
     fields: 'files(id, name)',
-    pageSize: 20,
+    pageSize: 50,
     orderBy: 'createdTime',
     supportsAllDrives: true,
     includeItemsFromAllDrives: true,
@@ -85,50 +98,91 @@ export async function findMeetFolder(drive, folderName = 'Meet Recordings') {
 }
 
 /**
- * Прокручивает все страницы по запросу `q`, пока не наберёт `limit` файлов.
+ * Прокручивает страницы по запросу `q`, пока не наберёт `limit` файлов.
  * Drive отдаёт максимум 1000 за раз — для поиска нам нужно широкое окно
  * (фильтрация в UI локальная, без запроса на каждую букву), поэтому
- * листаем с пагинацией, а не одним вызовом с маленьким pageSize.
+ * листаем с пагинацией. `pick(file)` — локальный фильтр/преобразование:
+ * вернул объект — берём его, вернул null — пропускаем; лимит считается по
+ * взятым, так что отсев не съедает окно.
  */
-async function paginateFiles(drive, q, limit) {
+async function paginateFiles(drive, q, limit, { fields = FILE_FIELDS, pick = f => f } = {}) {
   const files = [];
   let pageToken;
   do {
     const res = await drive.files.list({
       q,
-      fields: 'nextPageToken, files(id, name, size, createdTime, mimeType)',
+      fields: `nextPageToken, files(${fields})`,
       orderBy: 'createdTime desc',
-      pageSize: Math.min(1000, limit - files.length),
+      pageSize: 1000,
       pageToken,
       supportsAllDrives: true,
       includeItemsFromAllDrives: true,
     });
-    files.push(...(res.data.files || []));
+    for (const f of res.data.files || []) {
+      const kept = pick(f);
+      if (kept) files.push(kept);
+    }
     pageToken = res.data.nextPageToken;
   } while (pageToken && files.length < limit);
   return files.slice(0, limit);
 }
 
 /**
- * Листает видео/аудио-файлы в папке (свежие сверху).
- * Возвращает [{id, name, size, createdTime, mimeType}]
+ * Подпапки одного уровня (новая схема: папка встречи внутри «Google Meet»).
  */
-export async function listRecordings(drive, folderId, limit = 500) {
+async function listSubfolders(drive, folderId, limit = 2000) {
   return paginateFiles(
     drive,
-    `'${folderId}' in parents and trashed = false and (mimeType contains 'video/' or mimeType contains 'audio/')`,
-    limit
+    `'${folderId}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`,
+    limit,
+    { fields: 'id, name' }
   );
 }
 
 /**
- * Листает все файлы, доступные SA (если папки нет).
+ * Ярлык (shortcut) на медиа разворачивается в целевой файл: у участников
+ * встречи в их «Google Meet» лежат именно ярлыки, а не файлы. Подменяем
+ * id/mimeType на target, чтобы скачивание и переименование шли по настоящему
+ * файлу; исходный id ярлыка — в `shortcutId`. Не-медиа и ярлыки на не-медиа
+ * отбрасываются (null). size/createdTime/name у ярлыка свои (size вообще
+ * пустой) — их дочитывает resolveShortcutTargets.
  */
-export async function listAllFiles(drive, limit = 500) {
+function resolveMedia(f) {
+  if (f.mimeType !== SHORTCUT_MIME) return isMedia(f.mimeType) ? f : null;
+  const t = f.shortcutDetails || {};
+  if (!t.targetId || !isMedia(t.targetMimeType)) return null;
+  return { ...f, id: t.targetId, mimeType: t.targetMimeType, shortcutId: f.id };
+}
+
+/**
+ * Дочитывает у ярлыков метаданные целевого файла (имя, размер, дата — иначе
+ * в списке «?» и дата создания ярлыка вместо даты записи). Ярлык, чья цель
+ * SA недоступна (файл организатора не расшарен на SA — обычный случай для
+ * папки участника), выпадает из списка: скачать его всё равно нельзя.
+ * Ярлыков обычно единицы, но на всякий случай — пачками, не все разом.
+ */
+async function resolveShortcutTargets(drive, shortcuts, batch = 20) {
+  const out = [];
+  for (let i = 0; i < shortcuts.length; i += batch) {
+    const results = await Promise.allSettled(shortcuts.slice(i, i + batch).map(async s => {
+      const r = await drive.files.get({ fileId: s.id, fields: 'id, name, size, createdTime, mimeType', supportsAllDrives: true });
+      return { ...s, ...r.data };
+    }));
+    for (const r of results) if (r.status === 'fulfilled') out.push(r.value);
+  }
+  return out;
+}
+
+/**
+ * Все видео/аудио (и ярлыки на них), доступные SA, где бы они ни лежали —
+ * свежие сверху. `keep(file)` — доп. локальный фильтр (например, по папке).
+ */
+export async function listAllFiles(drive, limit = 500, keep = () => true) {
   return paginateFiles(
     drive,
-    `trashed = false and (mimeType contains 'video/' or mimeType contains 'audio/')`,
-    limit
+    `trashed = false and (mimeType contains 'video/' or mimeType contains 'audio/' or mimeType = '${SHORTCUT_MIME}')`,
+    limit,
+    { pick: f => { const m = resolveMedia(f); return m && keep(m) ? m : null; } }
   );
 }
 
@@ -197,31 +251,89 @@ export function mergeRecordings(lists, limit) {
 
 /**
  * Собирает записи по переданному drive-клиенту (инжектируемый для тестов).
- * Читает ВСЕ найденные папки Meet Recordings параллельно, дедуплицирует.
- * Если папок нет — листает все файлы SA.
- * Недоступная папка (403/5xx) не обрывает весь запрос — пропускается.
- * Если папки есть, но ВСЕ отклонились — пробрасывает первую ошибку
- * (чтобы isAuthError дошёл до app.js).
+ * Возвращает { files, roots }: `roots` — найденные корневые папки Meet
+ * (для диагностики в UI).
+ *
+ * Схема: корни по имени → их подпапки (один уровень: папки встреч в
+ * «Google Meet», а также «Legacy Meet Recordings», когда Google уже перенёс
+ * старую папку внутрь) → ОДИН глобальный запрос медиа, доступных SA, с
+ * локальным фильтром по родителю. Не по запросу на папку: папок встреч со
+ * временем сотни. Записи из папки встречи получают `folderName` — оттуда
+ * берётся название, если файл назван кодом встречи (см. recordingName).
+ *
+ * Если корней нет — все медиа SA без фильтра (расшарено что-то другое).
+ * Недоступный корень (403/5xx на подпапках) не обрывает запрос — его прямые
+ * записи всё равно придут глобальным запросом. Если ВСЕ корни отклонились —
+ * пробрасываем первую ошибку (это уже проблема авторизации).
+ * Ярлык и настоящий файл на одну запись — оставляем настоящий; у остальных
+ * ярлыков дочитываем метаданные цели (недоступные — выпадают).
  */
 export async function collectRecordings(drive, limit = 500) {
-  const folders = await findMeetFolder(drive);
-  if (folders.length === 0) return listAllFiles(drive, limit);
-  const results = await Promise.allSettled(
-    folders.map(f => listRecordings(drive, f.id, limit))
-  );
-  const fulfilled = results.filter(r => r.status === 'fulfilled').map(r => r.value);
-  if (fulfilled.length === 0) throw results[0].reason;
-  return mergeRecordings(fulfilled, limit);
+  const roots = await findMeetFolders(drive);
+  let files;
+  if (roots.length === 0) {
+    files = await listAllFiles(drive, limit);
+  } else {
+    const subs = await Promise.allSettled(roots.map(r => listSubfolders(drive, r.id)));
+    if (subs.every(s => s.status === 'rejected')) throw subs[0].reason;
+
+    const folders = new Map(roots.map(r => [r.id, { ...r, isRoot: true }]));
+    for (const s of subs) {
+      if (s.status !== 'fulfilled') continue;
+      for (const f of s.value) {
+        if (!folders.has(f.id)) folders.set(f.id, { ...f, isRoot: MEET_ROOT_NAMES.includes(f.name) });
+      }
+    }
+
+    const parentOf = f => (f.parents || []).find(p => folders.has(p));
+    const found = await listAllFiles(drive, limit, f => parentOf(f) !== undefined);
+    files = found.map(f => {
+      const folder = folders.get(parentOf(f));
+      return folder.isRoot ? f : { ...f, folderName: folder.name };
+    });
+  }
+
+  const real = files.filter(f => !f.shortcutId);
+  const realIds = new Set(real.map(f => f.id));
+  const shortcuts = await resolveShortcutTargets(drive, files.filter(f => f.shortcutId && !realIds.has(f.id)));
+  return { files: mergeRecordings([real, shortcuts], limit), roots };
+}
+
+/**
+ * Имя записи для транскрипта. В новой схеме файл может называться кодом
+ * встречи («ycw-hgwf-vvd (2026-09-11 15:02 GMT+3)»), а осмысленное название —
+ * на папке встречи; тогда берём его оттуда. Возвращает { clean, isGeneric }
+ * как cleanMeetName.
+ */
+export function recordingName(file) {
+  const own = cleanMeetName(file.name);
+  if (!own.isGeneric || !file.folderName) return own;
+  const alt = cleanMeetName(file.folderName);
+  if (alt.isGeneric) return own;
+  // Папка серии (recurring) может быть без даты — дата тогда есть только у
+  // файла; без неё записи одной серии слипались бы в одно имя.
+  const date = own.clean.match(/\d{4}-\d{2}-\d{2}$/)?.[0];
+  if (date && !/\d{4}-\d{2}-\d{2}$/.test(alt.clean)) return { ...alt, clean: `${alt.clean} — ${date}` };
+  return alt;
+}
+
+/**
+ * Сводка по найденным корневым папкам для UI: «Google Meet ×1, Meet Recordings ×2».
+ */
+export function describeRoots(roots) {
+  const counts = new Map();
+  for (const r of roots) counts.set(r.name, (counts.get(r.name) || 0) + 1);
+  return [...counts].map(([name, n]) => `${name} ×${n}`).join(', ');
 }
 
 /**
  * Главная функция — получает Drive-клиент и список записей.
- * Возвращает { drive, files } или null при ошибке.
+ * Возвращает { drive, files, roots }.
  */
 export async function getMeetRecordings({ limit = 500, write = false } = {}) {
   const drive = getDriveClient(write);
-  const files = await collectRecordings(drive, limit);
-  return { drive, files };
+  const { files, roots } = await collectRecordings(drive, limit);
+  return { drive, files, roots };
 }
 
 /**

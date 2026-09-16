@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Readable } from 'stream';
-import { cleanMeetName, formatSize, renameDriveFile, driveRenameTarget, downloadFile, mergeRecordings, collectRecordings } from '../gdrive.js';
+import { cleanMeetName, formatSize, renameDriveFile, driveRenameTarget, downloadFile, mergeRecordings, collectRecordings, recordingName, describeRoots } from '../gdrive.js';
 
 test('cleanMeetName: осмысленное имя — чистится, дата нормализуется', () => {
   const r = cleanMeetName('Planning & Status check - 2026/06/01 15:30 CEST – Recording 2');
@@ -141,80 +141,208 @@ test('mergeRecordings: пустые списки — пустой результ
 });
 
 // ── collectRecordings ─────────────────────────────────────────────────────────
-
-test('collectRecordings: записи из ОБЕИХ папок присутствуют (regression: folder[1] не терялся)', async () => {
-  const folder1Recording = { id: 'rec1', name: 'Meet1.mp4', createdTime: '2026-06-01T10:00:00Z', mimeType: 'video/mp4', size: '1000' };
-  const folder2Recording = { id: 'rec2', name: 'Meet2.mp4', createdTime: '2026-05-01T10:00:00Z', mimeType: 'video/mp4', size: '2000' };
-
-  const drive = {
-    files: {
-      list: async ({ q }) => {
-        if (q.includes('application/vnd.google-apps.folder')) {
-          return { data: { files: [{ id: 'f1', name: 'Meet Recordings' }, { id: 'f2', name: 'Meet Recordings' }] } };
-        }
-        if (q.includes("'f1' in parents")) return { data: { files: [folder1Recording] } };
-        if (q.includes("'f2' in parents")) return { data: { files: [folder2Recording] } };
-        return { data: { files: [] } };
-      },
+//
+// Мок Drive различает три запроса collectRecordings по тексту `q`:
+//   roots  — корневые папки по имени (`name = 'Google Meet' …`)
+//   subs   — подпапки корня (`'<id>' in parents and mimeType = folder`)
+//   media  — глобальный список видео/аудио/ярлыков (`mimeType contains 'video/'`)
+const FOLDER = 'application/vnd.google-apps.folder';
+const SHORTCUT = 'application/vnd.google-apps.shortcut';
+//   files.get — метаданные цели ярлыка (`targets[id]`; Error → бросается)
+const mockDrive = ({ roots = [], subs = {}, media = [], targets = {}, gets = [] }) => ({
+  files: {
+    get: async ({ fileId }) => {
+      gets.push(fileId);
+      const t = targets[fileId];
+      if (!t) throw new Error(`404 File not found: ${fileId}`);
+      if (t instanceof Error) throw t;
+      return { data: t };
     },
-  };
+    list: async ({ q, pageToken }) => {
+      if (q.includes("name = 'Google Meet'")) return { data: { files: roots } };
+      if (q.includes(`mimeType = '${FOLDER}'`)) {
+        const id = q.match(/^'([^']+)' in parents/)[1];
+        const r = subs[id];
+        if (r instanceof Error) throw r;
+        return { data: { files: r || [] } };
+      }
+      if (q.includes("mimeType contains 'video/'")) {
+        if (media instanceof Error) throw media;
+        if (typeof media === 'function') return media(pageToken);
+        return { data: { files: media } };
+      }
+      throw new Error(`неожиданный запрос: ${q}`);
+    },
+  },
+});
+const rec = (id, parent, createdTime, extra = {}) =>
+  ({ id, name: `${id}.mp4`, createdTime, mimeType: 'video/mp4', size: '1000', parents: [parent], ...extra });
 
-  const files = await collectRecordings(drive, 500);
-  assert.equal(files.length, 2);
-  assert.ok(files.find(f => f.id === 'rec1'), 'запись из папки 1 присутствует');
-  assert.ok(files.find(f => f.id === 'rec2'), 'запись из папки 2 присутствует');
-  assert.equal(files[0].id, 'rec1', 'новейшая сверху');
+test('collectRecordings: старая схема — записи из ОБЕИХ «Meet Recordings», чужие медиа отсеяны', async () => {
+  const drive = mockDrive({
+    roots: [{ id: 'f1', name: 'Meet Recordings' }, { id: 'f2', name: 'Meet Recordings' }],
+    media: [
+      rec('rec2', 'f2', '2026-05-01T10:00:00Z'),
+      rec('rec1', 'f1', '2026-06-01T10:00:00Z'),
+      rec('noise', 'somewhere-else', '2026-07-01T10:00:00Z'),
+    ],
+  });
+
+  const { files, roots } = await collectRecordings(drive, 500);
+  assert.deepEqual(files.map(f => f.id), ['rec1', 'rec2'], 'обе записи, новейшая сверху, чужая отсеяна');
+  assert.equal(files[0].folderName, undefined, 'запись прямо в корне — без folderName');
+  assert.equal(roots.length, 2);
 });
 
-test('collectRecordings: 0 папок — fallback в listAllFiles', async () => {
-  const allFile = { id: 'any', name: 'random.mp4', createdTime: '2026-06-01T00:00:00Z', mimeType: 'video/mp4', size: '500' };
-  const drive = {
-    files: {
-      list: async ({ q }) => {
-        if (q.includes('application/vnd.google-apps.folder')) return { data: { files: [] } };
-        return { data: { files: [allFile] } };
-      },
+test('collectRecordings: новая схема — записи из подпапок «Google Meet», folderName с папки встречи', async () => {
+  const drive = mockDrive({
+    roots: [{ id: 'gm', name: 'Google Meet' }],
+    subs: {
+      gm: [
+        { id: 'm1', name: 'ycw-hgwf-vvd - 2026/09/11 15:02 MSK' },
+        { id: 'legacy', name: 'Legacy Meet Recordings' },
+      ],
     },
-  };
+    media: [
+      rec('new', 'm1', '2026-09-11T13:34:53Z', { name: 'ycw-hgwf-vvd (2026-09-11 15:02 GMT+3)' }),
+      rec('old', 'legacy', '2026-09-10T19:22:43Z'),
+      rec('noise', 'other', '2026-09-12T00:00:00Z'),
+    ],
+  });
 
-  const files = await collectRecordings(drive, 500);
-  assert.equal(files.length, 1);
-  assert.equal(files[0].id, 'any');
+  const { files } = await collectRecordings(drive, 500);
+  assert.deepEqual(files.map(f => f.id), ['new', 'old']);
+  assert.equal(files[0].folderName, 'ycw-hgwf-vvd - 2026/09/11 15:02 MSK', 'папка встречи → folderName');
+  assert.equal(files[1].folderName, undefined, '«Legacy Meet Recordings» внутри «Google Meet» — корень, не папка встречи');
 });
 
-test('collectRecordings: частичный сбой — запись из живой папки сохраняется', async () => {
-  const rec1 = { id: 'rec1', name: 'Meet1.mp4', createdTime: '2026-06-01T10:00:00Z', mimeType: 'video/mp4', size: '1000' };
-  const drive = {
-    files: {
-      list: async ({ q }) => {
-        if (q.includes('application/vnd.google-apps.folder')) {
-          return { data: { files: [{ id: 'f1', name: 'Meet Recordings' }, { id: 'f2', name: 'Meet Recordings' }] } };
-        }
-        if (q.includes("'f1' in parents")) return { data: { files: [rec1] } };
-        if (q.includes("'f2' in parents")) throw new Error('403 Forbidden');
-        return { data: { files: [] } };
-      },
+test('collectRecordings: ярлык → целевой файл с его метаданными; настоящий файл побеждает дубль-ярлык; недоступная цель выпадает', async () => {
+  const gets = [];
+  const drive = mockDrive({
+    roots: [{ id: 'gm', name: 'Google Meet' }, { id: 'mr', name: 'Meet Recordings' }],
+    subs: { gm: [{ id: 'm1', name: 'Planning - 2026/09/12 10:00 CEST' }] },
+    media: [
+      { id: 'sc-doc', name: 'Notes', createdTime: '2026-09-12T10:00:00Z', mimeType: SHORTCUT, parents: ['m1'],
+        shortcutDetails: { targetId: 'DOC', targetMimeType: 'application/vnd.google-apps.document' } },
+      { id: 'sc-only', name: 'Only shortcut', createdTime: '2026-09-12T09:00:00Z', mimeType: SHORTCUT, parents: ['m1'],
+        shortcutDetails: { targetId: 'T2', targetMimeType: 'video/mp4' } },
+      { id: 'sc-dead', name: 'Dead shortcut', createdTime: '2026-09-12T08:30:00Z', mimeType: SHORTCUT, parents: ['m1'],
+        shortcutDetails: { targetId: 'T3', targetMimeType: 'video/mp4' } },
+      { id: 'sc-dup', name: 'Planning', createdTime: '2026-09-12T08:00:00Z', mimeType: SHORTCUT, parents: ['m1'],
+        shortcutDetails: { targetId: 'T1', targetMimeType: 'video/mp4' } },
+      rec('T1', 'mr', '2026-09-12T07:59:00Z', { name: 'Planning' }),
+    ],
+    targets: {
+      // Цель ярлыка старше самого ярлыка и с реальным размером — в списке должны быть ЕЁ данные.
+      T2: { id: 'T2', name: 'Planning (2026-09-12 07:00 GMT+2)', size: '555', createdTime: '2026-09-12T05:00:00Z', mimeType: 'video/mp4' },
+      T3: new Error('403 The caller does not have permission'),
     },
-  };
+    gets,
+  });
 
-  const files = await collectRecordings(drive, 500);
-  assert.equal(files.length, 1);
-  assert.equal(files[0].id, 'rec1', 'запись из живой папки присутствует');
+  const { files } = await collectRecordings(drive, 500);
+  assert.deepEqual(files.map(f => f.id), ['T1', 'T2'], 'ярлык на документ и ярлык с недоступной целью отброшены; дубль схлопнут; порядок по дате ЦЕЛИ');
+  const viaShortcut = files.find(f => f.id === 'T2');
+  assert.equal(viaShortcut.shortcutId, 'sc-only');
+  assert.equal(viaShortcut.name, 'Planning (2026-09-12 07:00 GMT+2)', 'имя — целевого файла');
+  assert.equal(viaShortcut.size, '555', 'размер — целевого файла (у ярлыка его нет)');
+  assert.equal(viaShortcut.createdTime, '2026-09-12T05:00:00Z', 'дата — целевого файла');
+  assert.equal(viaShortcut.mimeType, 'video/mp4');
+  assert.equal(viaShortcut.folderName, 'Planning - 2026/09/12 10:00 CEST');
+  const real = files.find(f => f.id === 'T1');
+  assert.equal(real.shortcutId, undefined, 'при дубле остаётся настоящий файл, не ярлык');
+  assert.deepEqual(gets.sort(), ['T2', 'T3'], 'files.get только для ярлыков без настоящего дубля');
 });
 
-test('collectRecordings: полный сбой всех папок — пробрасывает ошибку', async () => {
-  const drive = {
-    files: {
-      list: async ({ q }) => {
-        if (q.includes('application/vnd.google-apps.folder')) {
-          return { data: { files: [{ id: 'f1', name: 'Meet Recordings' }, { id: 'f2', name: 'Meet Recordings' }] } };
-        }
-        throw new Error('401 Unauthorized');
-      },
+test('collectRecordings: 0 корневых папок — fallback: все медиа SA без фильтра по папке (ярлыки тоже разворачиваются)', async () => {
+  const drive = mockDrive({
+    media: [
+      rec('any', 'wherever', '2026-06-01T00:00:00Z'),
+      { id: 'txt', name: 'chat.txt', createdTime: '2026-06-02T00:00:00Z', mimeType: 'text/plain', parents: ['wherever'] },
+      { id: 'sc', name: 'Shortcut', createdTime: '2026-06-03T00:00:00Z', mimeType: SHORTCUT, parents: ['wherever'],
+        shortcutDetails: { targetId: 'T', targetMimeType: 'audio/mpeg' } },
+    ],
+    targets: { T: { id: 'T', name: 'Target', size: '7', createdTime: '2026-05-01T00:00:00Z', mimeType: 'audio/mpeg' } },
+  });
+
+  const { files, roots } = await collectRecordings(drive, 500);
+  assert.deepEqual(files.map(f => f.id), ['any', 'T']);
+  assert.equal(files[1].size, '7');
+  assert.deepEqual(roots, []);
+});
+
+test('collectRecordings: отсев по папке не съедает лимит — листаем следующую страницу', async () => {
+  const calls = [];
+  const drive = mockDrive({
+    roots: [{ id: 'f1', name: 'Meet Recordings' }],
+    media: (pageToken) => {
+      calls.push(pageToken);
+      if (!pageToken) return { data: { files: [rec('n1', 'x', '2026-06-03T00:00:00Z'), rec('n2', 'x', '2026-06-02T00:00:00Z')], nextPageToken: 'p2' } };
+      return { data: { files: [rec('rec1', 'f1', '2026-06-01T00:00:00Z')] } };
     },
-  };
+  });
+
+  const { files } = await collectRecordings(drive, 1);
+  assert.deepEqual(files.map(f => f.id), ['rec1']);
+  assert.deepEqual(calls, [undefined, 'p2']);
+});
+
+test('collectRecordings: сбой подпапок одного корня — его прямые записи всё равно приходят', async () => {
+  const drive = mockDrive({
+    roots: [{ id: 'f1', name: 'Meet Recordings' }, { id: 'f2', name: 'Meet Recordings' }],
+    subs: { f2: new Error('403 Forbidden') },
+    media: [rec('rec1', 'f1', '2026-06-01T10:00:00Z'), rec('rec2', 'f2', '2026-05-01T10:00:00Z')],
+  });
+
+  const { files } = await collectRecordings(drive, 500);
+  assert.deepEqual(files.map(f => f.id), ['rec1', 'rec2']);
+});
+
+test('collectRecordings: полный сбой всех корней — пробрасывает ошибку', async () => {
+  const drive = mockDrive({
+    roots: [{ id: 'f1', name: 'Meet Recordings' }, { id: 'f2', name: 'Meet Recordings' }],
+    subs: { f1: new Error('401 Unauthorized'), f2: new Error('401 Unauthorized') },
+  });
 
   await assert.rejects(() => collectRecordings(drive, 500), /401 Unauthorized/);
+});
+
+// ── recordingName / describeRoots ─────────────────────────────────────────────
+
+test('recordingName: файл назван кодом встречи, папка осмысленная — имя с папки', () => {
+  const r = recordingName({ name: 'ycw-hgwf-vvd (2026-09-11 15:02 GMT+3)', folderName: 'Planning & Status check - 2026/09/11 15:02 MSK' });
+  assert.equal(r.clean, 'Planning & Status check — 2026-09-11');
+  assert.equal(r.isGeneric, false);
+});
+
+test('recordingName: и файл, и папка — код встречи → generic с датой из файла', () => {
+  const r = recordingName({ name: 'ycw-hgwf-vvd (2026-09-11 15:02 GMT+3)', folderName: 'ycw-hgwf-vvd - 2026/09/11 15:02 MSK' });
+  assert.equal(r.isGeneric, true);
+  assert.equal(r.clean, 'Запись — 2026-09-11');
+});
+
+test('recordingName: папка серии без даты — дата берётся из файла', () => {
+  const r = recordingName({ name: 'ycw-hgwf-vvd (2026-09-11 15:02 GMT+3)', folderName: 'Planning & Status check (recurring)' });
+  assert.equal(r.clean, 'Planning & Status check (recurring) — 2026-09-11');
+  assert.equal(r.isGeneric, false);
+});
+
+test('recordingName: осмысленное имя файла — папка не смотрится', () => {
+  const r = recordingName({ name: 'Pre-planning - 2026/09/07 10:44 CEST – Recording', folderName: 'ycw-hgwf-vvd - 2026/09/07 10:44 MSK' });
+  assert.equal(r.clean, 'Pre-planning — 2026-09-07');
+  assert.equal(r.isGeneric, false);
+});
+
+test('recordingName: без folderName (старая схема) — как cleanMeetName', () => {
+  assert.deepEqual(recordingName({ name: 'bbb-tupg-phm (2026-05-26 20:02 GMT+2)' }), cleanMeetName('bbb-tupg-phm (2026-05-26 20:02 GMT+2)'));
+});
+
+test('describeRoots: группирует по имени', () => {
+  assert.equal(
+    describeRoots([{ name: 'Google Meet' }, { name: 'Meet Recordings' }, { name: 'Meet Recordings' }]),
+    'Google Meet ×1, Meet Recordings ×2'
+  );
+  assert.equal(describeRoots([]), '');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
