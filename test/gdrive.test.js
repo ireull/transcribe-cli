@@ -337,6 +337,56 @@ test('recordingName: без folderName (старая схема) — как clea
   assert.deepEqual(recordingName({ name: 'bbb-tupg-phm (2026-05-26 20:02 GMT+2)' }), cleanMeetName('bbb-tupg-phm (2026-05-26 20:02 GMT+2)'));
 });
 
+test('collectRecordings: ownedOnly — «me in owners» в запросах корней и медиа, ярлыки не берутся', async () => {
+  const queries = [];
+  const inner = mockDrive({
+    roots: [{ id: 'f1', name: 'Meet Recordings' }],
+    media: [
+      rec('own', 'f1', '2026-09-12T10:00:00Z', { owners: [{ emailAddress: 'thegrowglobal.pro@gmail.com' }] }),
+      { id: 'sc', name: 'Shortcut', createdTime: '2026-09-12T09:00:00Z', mimeType: SHORTCUT, parents: ['f1'],
+        shortcutDetails: { targetId: 'T', targetMimeType: 'video/mp4' } },
+    ],
+    targets: { T: { id: 'T', name: 'Target', mimeType: 'video/mp4', createdTime: '2026-09-12T08:00:00Z' } },
+  });
+  const drive = { files: { ...inner.files, list: async (args) => { queries.push(args.q); return inner.files.list(args); } } };
+
+  const { files } = await collectRecordings(drive, 500, { ownedOnly: true });
+  assert.deepEqual(files.map(f => f.id), ['own'], 'ярлык отброшен, даже если цель доступна');
+  const rootQ = queries.find(q => q.includes("name = 'Google Meet'"));
+  const mediaQ = queries.find(q => q.includes("mimeType contains 'video/'"));
+  assert.ok(rootQ.includes("'me' in owners"), 'корни — только свои');
+  assert.ok(mediaQ.includes("'me' in owners"), 'медиа — только свои');
+  assert.ok(!mediaQ.includes('shortcut'), 'ярлыки не запрашиваются');
+});
+
+test('collectRecordings: rootIds — явный корень по ID добавляется к найденным по имени (дубль по id — один раз)', async () => {
+  const gets = [];
+  const drive = mockDrive({
+    roots: [{ id: 'gm', name: 'Google Meet' }],
+    subs: { cfg: [{ id: 'm1', name: 'Planning - 2026/09/12 10:00 CEST' }] },
+    media: [rec('a', 'gm', '2026-09-12T10:00:00Z'), rec('b', 'm1', '2026-09-12T09:00:00Z'), rec('c', 'elsewhere', '2026-09-12T08:00:00Z')],
+    targets: { cfg: { id: 'cfg', name: 'Inbox (renamed)' } },
+    gets,
+  });
+
+  const { files, roots } = await collectRecordings(drive, 500, { rootIds: ['cfg', 'gm', ''] });
+  assert.deepEqual(roots.map(r => r.id), ['gm', 'cfg']);
+  assert.deepEqual(gets, ['cfg'], 'files.get только для корня, которого нет среди найденных');
+  assert.deepEqual(files.map(f => f.id), ['a', 'b']);
+  assert.equal(files[1].folderName, 'Planning - 2026/09/12 10:00 CEST');
+});
+
+test('collectRecordings: rootIds — недоступный ID пробрасывает ошибку (неверная настройка)', async () => {
+  const drive = mockDrive({ roots: [], media: [] });
+  await assert.rejects(() => collectRecordings(drive, 500, { rootIds: ['missing'] }), /404/);
+});
+
+test('collectRecordings: rootIds: null — как «без явных корней»', async () => {
+  const drive = mockDrive({ roots: [], media: [rec('a', 'x', '2026-09-12T10:00:00Z')] });
+  const { files } = await collectRecordings(drive, 500, { rootIds: null });
+  assert.deepEqual(files.map(f => f.id), ['a']);
+});
+
 test('collectRecordings: account — владелец файла; у ярлыка — владелец цели; без owners — пусто', async () => {
   const drive = mockDrive({
     roots: [{ id: 'f1', name: 'Meet Recordings' }],

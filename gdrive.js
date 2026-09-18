@@ -82,12 +82,14 @@ const isMedia = (mime) => /^(video|audio)\//.test(mime || '');
 /**
  * Ищет корневые папки Meet (см. MEET_ROOT_NAMES): точные имена плюс
  * `contains 'Meet Recordings'` — для старых папок, переименованных руками.
- * SA видит только то, что ему расшарили.
+ * SA видит только то, что ему расшарили. `ownedOnly` — только папки самого
+ * аккаунта (`'me' in owners`): для OAuth-клиента под пользователем, чтобы
+ * не подхватывать чужие Meet-папки, расшаренные ему.
  */
-export async function findMeetFolders(drive) {
+export async function findMeetFolders(drive, { ownedOnly = false } = {}) {
   const exact = MEET_ROOT_NAMES.map(n => `name = '${n}'`).join(' or ');
   const res = await drive.files.list({
-    q: `mimeType = '${FOLDER_MIME}' and trashed = false and (${exact} or name contains 'Meet Recordings')`,
+    q: `mimeType = '${FOLDER_MIME}' and trashed = false${ownedOnly ? " and 'me' in owners" : ''} and (${exact} or name contains 'Meet Recordings')`,
     fields: 'files(id, name)',
     pageSize: 50,
     orderBy: 'createdTime',
@@ -174,15 +176,26 @@ async function resolveShortcutTargets(drive, shortcuts, batch = 20) {
 }
 
 /**
- * Все видео/аудио (и ярлыки на них), доступные SA, где бы они ни лежали —
+ * Все видео/аудио (и ярлыки на них), доступные клиенту, где бы они ни лежали —
  * свежие сверху. `keep(file)` — доп. локальный фильтр (например, по папке).
+ * `ownedOnly` — только файлы самого аккаунта; ярлыки при этом не берём вовсе
+ * (ярлык ведёт на чужую запись, а нужны свои).
  */
-export async function listAllFiles(drive, limit = 500, keep = () => true) {
+export async function listAllFiles(drive, limit = 500, keep = () => true, { ownedOnly = false } = {}) {
+  const media = ownedOnly
+    ? `'me' in owners and (mimeType contains 'video/' or mimeType contains 'audio/')`
+    : `(mimeType contains 'video/' or mimeType contains 'audio/' or mimeType = '${SHORTCUT_MIME}')`;
   return paginateFiles(
     drive,
-    `trashed = false and (mimeType contains 'video/' or mimeType contains 'audio/' or mimeType = '${SHORTCUT_MIME}')`,
+    `trashed = false and ${media}`,
     limit,
-    { pick: f => { const m = resolveMedia(f); return m && keep(m) ? m : null; } }
+    {
+      pick: f => {
+        if (ownedOnly && f.mimeType === SHORTCUT_MIME) return null;
+        const m = resolveMedia(f);
+        return m && keep(m) ? m : null;
+      },
+    }
   );
 }
 
@@ -267,12 +280,22 @@ export function mergeRecordings(lists, limit) {
  * пробрасываем первую ошибку (это уже проблема авторизации).
  * Ярлык и настоящий файл на одну запись — оставляем настоящий; у остальных
  * ярлыков дочитываем метаданные цели (недоступные — выпадают).
+ *
+ * Опции: `ownedOnly` — только папки и файлы самого аккаунта (см.
+ * findMeetFolders/listAllFiles), `rootIds` — явные корни по ID в дополнение к
+ * найденным по имени (например, папка из конфига; недоступный ID — ошибка,
+ * это неверная настройка, а не «нет записей»).
  */
-export async function collectRecordings(drive, limit = 500) {
-  const roots = await findMeetFolders(drive);
+export async function collectRecordings(drive, limit = 500, { ownedOnly = false, rootIds = [] } = {}) {
+  const roots = await findMeetFolders(drive, { ownedOnly });
+  for (const id of rootIds || []) {
+    if (!id || roots.some(r => r.id === id)) continue;
+    const r = await drive.files.get({ fileId: id, fields: 'id, name', supportsAllDrives: true });
+    roots.push({ id: r.data.id, name: r.data.name });
+  }
   let files;
   if (roots.length === 0) {
-    files = await listAllFiles(drive, limit);
+    files = await listAllFiles(drive, limit, () => true, { ownedOnly });
   } else {
     const subs = await Promise.allSettled(roots.map(r => listSubfolders(drive, r.id)));
     if (subs.every(s => s.status === 'rejected')) throw subs[0].reason;
@@ -286,7 +309,7 @@ export async function collectRecordings(drive, limit = 500) {
     }
 
     const parentOf = f => (f.parents || []).find(p => folders.has(p));
-    const found = await listAllFiles(drive, limit, f => parentOf(f) !== undefined);
+    const found = await listAllFiles(drive, limit, f => parentOf(f) !== undefined, { ownedOnly });
     files = found.map(f => {
       const folder = folders.get(parentOf(f));
       return folder.isRoot ? f : { ...f, folderName: folder.name };
@@ -352,9 +375,9 @@ export function describeRoots(roots) {
  * Главная функция — получает Drive-клиент и список записей.
  * Возвращает { drive, files, roots }.
  */
-export async function getMeetRecordings({ limit = 500, write = false } = {}) {
+export async function getMeetRecordings({ limit = 500, write = false, ...opts } = {}) {
   const drive = getDriveClient(write);
-  const { files, roots } = await collectRecordings(drive, limit);
+  const { files, roots } = await collectRecordings(drive, limit, opts);
   return { drive, files, roots };
 }
 

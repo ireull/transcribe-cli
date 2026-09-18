@@ -22,3 +22,12 @@
   - Список Meet: цветная выровненная метка `[account]` и строка «Аккаунты: a ×N, b ×M» — только если аккаунтов больше одного.
   - Поиск в списке находит и по аккаунту (`londeren 09`).
   - Тесты на account/accountLabel/describeCounts; README/CLAUDE.md; bump 1.20.0.
+
+- [x] TCL-003 gdrive: опции collectRecordings ownedOnly/rootIds для оркестратора		#meet #gdrive #api @owner:claude-fable @status:done
+  Оркестратор (orkestrator-gg, OAuth под thegrowglobal.pro) опрашивал одну папку по ID и с 11.09 не видел записей из
+  «Google Meet/<встреча>/»; к тому же импортировал удалённый в 1.19.0 `listRecordings`. Нужен общий поиск по всем
+  Meet-папкам аккаунта, но только своим (OAuth видит и чужие расшаренные), плюс явный корень из конфига.
+  **Implemented:**
+  - `collectRecordings(drive, limit, { ownedOnly, rootIds })`: `'me' in owners` в запросах корней и медиа, ярлыки при
+    ownedOnly не берутся; явные корни по ID добавляются к найденным по имени, недоступный ID — ошибка.
+  - `getMeetRecordings` прокидывает опции; тесты; CLAUDE.md про публичный API gdrive.js; bump 1.21.0.
