@@ -381,6 +381,13 @@ test('collectRecordings: rootIds — недоступный ID пробрасы�
   await assert.rejects(() => collectRecordings(drive, 500, { rootIds: ['missing'] }), /404/);
 });
 
+test('collectRecordings: ownedOnly без корней — пусто, а не все видео аккаунта', async () => {
+  const drive = mockDrive({ roots: [], media: [rec('marketing', 'somewhere', '2026-09-12T10:00:00Z')] });
+  const { files, roots } = await collectRecordings(drive, 500, { ownedOnly: true });
+  assert.deepEqual(files, []);
+  assert.deepEqual(roots, []);
+});
+
 test('collectRecordings: rootIds: null — как «без явных корней»', async () => {
   const drive = mockDrive({ roots: [], media: [rec('a', 'x', '2026-09-12T10:00:00Z')] });
   const { files } = await collectRecordings(drive, 500, { rootIds: null });

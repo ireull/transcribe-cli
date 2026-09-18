@@ -282,9 +282,10 @@ export function mergeRecordings(lists, limit) {
  * ярлыков дочитываем метаданные цели (недоступные — выпадают).
  *
  * Опции: `ownedOnly` — только папки и файлы самого аккаунта (см.
- * findMeetFolders/listAllFiles), `rootIds` — явные корни по ID в дополнение к
- * найденным по имени (например, папка из конфига; недоступный ID — ошибка,
- * это неверная настройка, а не «нет записей»).
+ * findMeetFolders/listAllFiles; без корней — пусто, а не все видео аккаунта),
+ * `rootIds` — явные корни по ID в дополнение к найденным по имени (например,
+ * папка из конфига; недоступный ID — ошибка, это неверная настройка, а не
+ * «нет записей»).
  */
 export async function collectRecordings(drive, limit = 500, { ownedOnly = false, rootIds = [] } = {}) {
   const roots = await findMeetFolders(drive, { ownedOnly });
@@ -295,7 +296,10 @@ export async function collectRecordings(drive, limit = 500, { ownedOnly = false,
   }
   let files;
   if (roots.length === 0) {
-    files = await listAllFiles(drive, limit, () => true, { ownedOnly });
+    // Без корней: SA видит только расшаренное, так что «все медиа» — разумный
+    // fallback. Но при ownedOnly (OAuth под аккаунтом) это были бы ВСЕ видео
+    // аккаунта, а не записи Meet — тогда честнее пусто.
+    files = ownedOnly ? [] : await listAllFiles(drive, limit);
   } else {
     const subs = await Promise.allSettled(roots.map(r => listSubfolders(drive, r.id)));
     if (subs.every(s => s.status === 'rejected')) throw subs[0].reason;
