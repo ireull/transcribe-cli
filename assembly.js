@@ -23,6 +23,55 @@ function assemblyAuthError(stage, status, detail = '') {
   return e;
 }
 
+// Диаризация иногда схлопывается: на длинной записи AssemblyAI отдаёт одного
+// спикера и одну-две utterance на весь файл — навигации по такому транскрипту
+// нет. Признак: спикер один И реплики реже одной на COLLAPSE_DENSITY_S, на
+// записи от COLLAPSE_MIN_DURATION_S. Спикер один, поэтому переход на абзацы
+// ничего не различает хуже — только добавляет таймстампы.
+// Оба порога обязаны быть binding: 60 с даёт минимум один таймстамп в минуту,
+// 120 с отсекает короткие клипы, где одна реплика на весь файл — норма.
+const COLLAPSE_MIN_DURATION_S = 120;
+const COLLAPSE_DENSITY_S = 60;
+
+// Доля текста, ниже которой абзацы считаются неполным ответом и отбрасываются:
+// оплаченный транскрипт нельзя подменить усечённой версией самого себя.
+const COVERAGE_MIN_RATIO = 0.9;
+
+export function isDiarizationCollapsed(utterances, duration) {
+  if (!Array.isArray(utterances) || utterances.length === 0) return false;
+  if (!(duration >= COLLAPSE_MIN_DURATION_S)) return false;
+  const speakers = new Set(utterances.map(u => u.speaker));
+  return speakers.size <= 1 && utterances.length < duration / COLLAPSE_DENSITY_S;
+}
+
+const textLength = (arr) => arr.reduce((n, u) => n + (u.transcript || '').length, 0);
+
+// Абзацы уже посчитанного job'а — отдельный ресурс того же транскрипта, повторно
+// НЕ биллится. Нужны только как фоллбэк, поэтому вызывающий гасит сетевые ошибки:
+// транскрипт уже получен, терять его из-за абзацев нельзя.
+async function fetchParagraphs(id, {
+  apiKey,
+  timeoutMs = POLL_FETCH_TIMEOUT_MS,
+  retryAttempts = 3,
+  retryBaseMs = 1000,
+} = {}) {
+  const r = await withRetry(
+    () => fetchWithTimeout(
+      `${API}/transcript/${id}/paragraphs`,
+      { headers: { authorization: apiKey } },
+      { timeoutMs, service: 'AssemblyAI paragraphs' }
+    ),
+    { attempts: retryAttempts, baseMs: retryBaseMs }
+  );
+  if (!r.ok) {
+    // Тело читаем всегда: недоеденный body undici держит сокет до GC.
+    const detail = (await r.text().catch(() => '')).slice(0, 200);
+    throw new Error(`AssemblyAI paragraphs (${r.status})${detail ? `: ${detail}` : ''}`);
+  }
+  const { paragraphs = [] } = await r.json();
+  return paragraphs;
+}
+
 export async function uploadAssembly(audioPath, {
   apiKey,
   log = () => {},
@@ -154,15 +203,54 @@ export async function transcribeAssembly(audioPath, {
 
   // 4. Маппинг utterances: метку спикера (A/B/C) СОХРАНЯЕМ как есть, время мс → сек.
   //    Именование — не дело движка: «Speaker A/B/C» переименовывают позже (Telegram/CLI).
-  const utterances = (t.utterances || []).map(u => ({
+  let utterances = (t.utterances || []).map(u => ({
     speaker: u.speaker,
     start: (u.start || 0) / 1000,
     end: (u.end || 0) / 1000,
     transcript: u.text || '',
   }));
+  const duration = t.audio_duration || (utterances.at(-1)?.end ?? 0);
+
+  // 5. Диаризация схлопнулась — режем по абзацам того же job'а (см. isDiarizationCollapsed).
+  let diarizationFallback = false;
+  if (isDiarizationCollapsed(utterances, duration)) {
+    log('диаризация не разделила реплики — беру абзацы');
+    try {
+      const paragraphs = await fetchParagraphs(id, {
+        apiKey, timeoutMs: pollFetchTimeoutMs, retryAttempts, retryBaseMs,
+      });
+      const byParagraph = paragraphs.map(p => ({
+        speaker: utterances[0]?.speaker ?? 'A',
+        start: (p.start || 0) / 1000,
+        end: (p.end || 0) / 1000,
+        transcript: (p.text || '').trim(),
+      })).filter(u => u.transcript);
+      // Абзацы должны и дробить мельче, и покрывать тот же текст: частичный
+      // ответ прошёл бы первую проверку и молча срезал часть оплаченного
+      // транскрипта.
+      const covered = textLength(byParagraph) >= textLength(utterances) * COVERAGE_MIN_RATIO;
+      if (byParagraph.length > utterances.length && covered) {
+        utterances = byParagraph;
+        diarizationFallback = true;
+        log(`абзацев: ${utterances.length}`);
+      } else if (!covered) {
+        log(`абзацы покрывают лишь часть текста (${textLength(byParagraph)} из ${textLength(utterances)}) — оставляю реплики как есть`);
+      }
+    } catch (e) {
+      // Сетевые сбои и ответы не-2xx гасим: транскрипт уже есть и уже оплачен.
+      // Ошибка в самом коде фоллбэка — не то же самое, её надо видеть.
+      if (!/AssemblyAI paragraphs|истёк таймаут/.test(e.message || '')) {
+        log(`ошибка в фоллбэке на абзацы: ${e.stack || e.message}`);
+      } else {
+        log(`абзацы недоступны (${e.message}) — оставляю реплики как есть`);
+      }
+    }
+  }
+
   return {
     utterances,
-    duration: t.audio_duration || (utterances.at(-1)?.end ?? 0),
+    duration,
     speakers: new Set(utterances.map(u => u.speaker)).size,
+    diarizationFallback,
   };
 }

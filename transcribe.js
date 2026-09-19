@@ -269,7 +269,7 @@ function noopSpinner() {
   return s;
 }
 
-export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, numSpeakers = 0, onDiarCount, provider = 'deepgram', assemblyKey, model = 'nova-3', apiKey, outputDir, onSpeakers, summarize, name = '', nameIsGeneric = false, quiet = false }) {
+export async function runTranscription(source, { speakers, lang, autoLang = false, numerals = true, merge = true, numSpeakers = 0, provider = 'deepgram', assemblyKey, model = 'nova-3', apiKey, outputDir, onSpeakers, summarize, name = '', nameIsGeneric = false, quiet = false }) {
   const tmp = makeTmp();
   // Сигналы SIGINT/SIGTERM обрабатываются глобально в makeTmp — он почистит tmp
   // через activeTmpDirs, так что локальный handler больше не нужен.
@@ -304,10 +304,9 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
 
     let raw;
     if (provider === 'assembly') {
-      // Конвертируем в opus ОДИН раз ДО цикла пересчёта спикеров — иначе каждый
-      // «не то число → пересчитать» гонял бы ffmpeg по исходнику заново. Конвертим
-      // в CLI-tmp (реестр activeTmpDirs) — чистится и по SIGINT; ядро увидит .opus
-      // (DIRECT_AUDIO) и свою конвертацию пропустит. hq: AssemblyAI всегда диаризует.
+      // Конвертируем в opus один раз ДО аплоада, в CLI-tmp (реестр activeTmpDirs —
+      // чистится и по SIGINT); ядро увидит .opus (DIRECT_AUDIO) и свою конвертацию
+      // пропустит. hq: AssemblyAI всегда диаризует.
       if (!DIRECT_AUDIO.has(extname(audioPath).toLowerCase())) {
         spinner.text = chalk.cyan('Конвертирую аудио в opus...');
         audioPath = convertToOpus(audioPath, tmp, { hq: true });
@@ -321,22 +320,18 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
         log: m => { spinner.text = chalk.cyan(`AssemblyAI: ${m}`); },
       });
       spinner.succeed('AssemblyAI: аудио загружено');
-      // Цикл числа спикеров — ИНТЕРАКТИВНАЯ обёртка CLI поверх ядра:
-      // показали → не то → пересчитали со speakers_expected. Само ядро ввода не ждёт.
-      let forceN = numSpeakers, result;
-      while (true) {
-        spinner.text = chalk.cyan(forceN > 0 ? `AssemblyAI (${forceN} спикеров)...` : 'AssemblyAI (транскрипт + спикеры)...');
-        spinner.start();
-        result = await transcribeToUtterances({
-          uploadUrl, lang, detectLanguage: autoLang, diarization: true,
-          speakersExpected: forceN, apiKey: assemblyKey,
-          log: m => { spinner.text = chalk.cyan(`AssemblyAI: ${m}`); },
-        });
-        spinner.succeed(`AssemblyAI: ${result.speakers} спикеров`);
-        if (!onDiarCount) break;
-        const want = await onDiarCount(result.speakers);
-        if (!want || want === result.speakers) break;
-        forceN = want;
+      // Число спикеров — подсказка, заданная ДО старта (speakers_expected принимается
+      // только при сабмите). Уточнять постфактум нельзя: это вторая платная транскрипция.
+      spinner.text = chalk.cyan(numSpeakers > 0 ? `AssemblyAI (${numSpeakers} спикеров)...` : 'AssemblyAI (транскрипт + спикеры)...');
+      spinner.start();
+      const result = await transcribeToUtterances({
+        uploadUrl, lang, detectLanguage: autoLang, diarization: true,
+        speakersExpected: numSpeakers, apiKey: assemblyKey,
+        log: m => { spinner.text = chalk.cyan(`AssemblyAI: ${m}`); },
+      });
+      spinner.succeed(`AssemblyAI: ${result.speakers} спикеров`);
+      if (result.diarizationFallback && !quiet) {
+        console.log(chalk.yellow('  Диаризация не разделила реплики — таймстампы проставлены по абзацам, спикеры не размечены.'));
       }
       raw = { metadata: { duration: result.duration }, results: { utterances: result.utterances } };
     } else {

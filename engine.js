@@ -33,6 +33,10 @@ export const MIME_MAP = {
 
 // ─── Утилиты времени/кодирования ────────────────────────────────────────
 
+// Потолок склейки. Внутри диалога реплики короче, поэтому поведение не меняется;
+// у монолога гарантирует таймстамп хотя бы раз в минуту.
+export const MERGE_MAX_SPAN_S = 60;
+
 export function formatTs(sec) {
   const s = Math.floor(sec);
   const h = Math.floor(s / 3600);
@@ -99,12 +103,24 @@ export function convertToOpus(input, outDir, { hq = false } = {}) {
  * speakerNames (опц.) перебивает метку: {A:'Иван'} → «**Иван**». По умолчанию пусто —
  * ядро НИКОГО не переименовывает; имена приходят позже (CLI/Telegram).
  *
+ * merge склеивает подряд идущие реплики одного спикера, но НЕ безгранично: блок
+ * закрывается, когда его длительность доходит до MERGE_MAX_SPAN_S. Без этой
+ * границы монолог (один спикер на всю запись) сливался в один блок и от
+ * транскрипта оставался единственный таймстамп.
+ * Метка спикера не печатается, если спикер один и имени для него не задано —
+ * различать в таком транскрипте нечего; формат блока тогда «**[ts]**».
+ *
  * @param {{utterances:Array<{speaker:any,start:number,transcript:string}>,
  *          duration?:number, title?:string, speakerNames?:object,
  *          merge?:boolean, summary?:string}} arg
  * @returns {string}
  */
 export function assembleMarkdown({ utterances = [], duration = 0, title = '', speakerNames = {}, merge = true, summary = '' } = {}) {
+  // Метку «Speaker A» печатаем, только если она что-то различает: спикеров
+  // больше одного или спикеру задали имя. У монолога она — шум в каждом блоке.
+  const distinct = new Set(utterances.map(u => u.speaker));
+  const showSpeaker = distinct.size > 1 || [...distinct].some(s => speakerNames[s]);
+
   const lines = [];
   if (title) lines.push(`# ${title}`, '');
 
@@ -122,12 +138,16 @@ export function assembleMarkdown({ utterances = [], duration = 0, title = '', sp
     const spk = utterances[i].speaker;
     const name = speakerNames[spk] || `Speaker ${spk ?? '?'}`;
     const ts = formatTs(utterances[i].start ?? 0);
-    lines.push(`**${name}** [${ts}]`);
+    lines.push(showSpeaker ? `**${name}** [${ts}]` : `**[${ts}]**`);
     if (merge) {
-      // Склеиваем подряд идущие реплики одного спикера в один блок:
-      // чище читать и меньше токенов при последующей обработке LLM.
+      // Склеиваем подряд идущие реплики одного спикера в один блок: чище читать
+      // и меньше токенов при последующей обработке LLM. Но не дольше
+      // MERGE_MAX_SPAN_S — иначе монолог становится одним блоком на всю запись.
       const parts = [];
-      while (i < utterances.length && utterances[i].speaker === spk) {
+      const blockStart = utterances[i].start ?? 0;
+      while (i < utterances.length
+             && utterances[i].speaker === spk
+             && (utterances[i].start ?? 0) - blockStart <= MERGE_MAX_SPAN_S) {
         parts.push((utterances[i].transcript || '').trim());
         i++;
       }
@@ -144,9 +164,8 @@ export function assembleMarkdown({ utterances = [], duration = 0, title = '', sp
 
 /**
  * Низкоуровневый шаг: файл → upload_url AssemblyAI.
- * Конвертирует в opus при необходимости и заливает аудио один раз. Полезно для
- * сценариев, где один и тот же upload_url переиспользуется для повторного submit
- * с другим speakers_expected.
+ * Конвертирует в opus при необходимости и заливает аудио один раз. Разводит
+ * аплоад и сабмит: повторный submit по тому же upload_url не перезаливает аудио.
  *
  * @returns {Promise<{uploadUrl:string}>}
  */
@@ -191,7 +210,8 @@ export async function uploadForAssembly({
  * Возвращает реплики с метками спикеров A/B/C. НЕ пишет файлов, НЕ форматирует Markdown.
  * Если detectLanguage=true, AssemblyAI сам определяет язык вместо явного language_code.
  *
- * @returns {Promise<{utterances:Array, duration:number, speakers:number}>}
+ * @returns {Promise<{utterances:Array, duration:number, speakers:number,
+ *                    diarizationFallback:boolean}>}
  */
 export async function transcribeToUtterances({
   input,
@@ -228,7 +248,12 @@ export async function transcribeToUtterances({
       ...(retryBaseMs != null ? { retryBaseMs } : {}),
       log,
     });
-    return { utterances: result.utterances, duration: result.duration, speakers: result.speakers };
+    return {
+      utterances: result.utterances,
+      duration: result.duration,
+      speakers: result.speakers,
+      diarizationFallback: result.diarizationFallback,
+    };
   }
 
   // Свой временный каталог под конвертацию; чистим в finally. Глобальные
@@ -256,7 +281,12 @@ export async function transcribeToUtterances({
       ...(retryBaseMs != null ? { retryBaseMs } : {}),
       log,
     });
-    return { utterances: result.utterances, duration: result.duration, speakers: result.speakers };
+    return {
+      utterances: result.utterances,
+      duration: result.duration,
+      speakers: result.speakers,
+      diarizationFallback: result.diarizationFallback,
+    };
   } finally {
     try { rmSync(tmp, { recursive: true, force: true }); } catch {}
   }
@@ -270,7 +300,7 @@ export async function transcribeToUtterances({
  *          speakersExpected?:number, apiKey?:string, title?:string, merge?:boolean,
  *          pollIntervalMs?:number, pollTimeoutMs?:number, log?:(m:string)=>void}} arg
  * @returns {Promise<{outputPath:string, markdown:string, speakers:number,
- *                    duration:number, utterances:Array}>}
+ *                    duration:number, utterances:Array, diarizationFallback:boolean}>}
  */
 export async function transcribeFile({
   input,
@@ -286,7 +316,7 @@ export async function transcribeFile({
   pollTimeoutMs,
   log = () => {},
 } = {}) {
-  const { utterances, duration, speakers } = await transcribeToUtterances({
+  const { utterances, duration, speakers, diarizationFallback } = await transcribeToUtterances({
     input, lang, detectLanguage, diarization, speakersExpected, apiKey, pollIntervalMs, pollTimeoutMs, log,
   });
   const markdown = assembleMarkdown({ utterances, duration, title, merge });
@@ -294,5 +324,5 @@ export async function transcribeFile({
     mkdirSync(dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, markdown, 'utf-8');
   }
-  return { outputPath: outputPath || '', markdown, speakers, duration, utterances };
+  return { outputPath: outputPath || '', markdown, speakers, duration, utterances, diarizationFallback };
 }

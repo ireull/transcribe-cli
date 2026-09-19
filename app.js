@@ -71,21 +71,34 @@ async function askSpeakerNames(previews) {
   return names;
 }
 
-// ─── Подтверждение числа спикеров (локальная диаризация) ────────────
+// ─── Число спикеров ─────────────────────────────────────────────────
 
-// Показывает, сколько спикеров поймала диаризация. Если не совпало — просит
-// точное число (диаризация пересчитается с подсказкой). 0/Enter = принять.
-async function askDiarCount(detected) {
-  console.log();
-  console.log(chalk.cyan(`  Найдено спикеров: ${chalk.bold(detected)}`));
-  if (await yesNo('Столько и есть?', true)) return 0;
-  const v = await input({ message: 'Сколько спикеров на самом деле?', default: String(detected) });
+// Спрашиваем ДО запуска: AssemblyAI принимает speakers_expected только при
+// сабмите, поэтому уточнение постфактум означало бы вторую платную транскрипцию.
+// «Не знаю» стоит первым и выбирается одним Enter — это самый частый ответ.
+async function askSpeakersExpected() {
+  const choices = [
+    { name: 'Не знаю / неважно — определить автоматически', value: 0 },
+    { name: '1 — монолог, лекция, стрим', value: 1 },
+    { name: '2 — интервью, созвон вдвоём', value: 2 },
+    { name: '3', value: 3 },
+    { name: '4', value: 4 },
+    { name: chalk.dim('Другое число...'), value: -1 },
+  ];
+  const picked = await select({ message: 'Сколько спикеров в записи?', choices });
+  if (picked !== -1) return picked;
+  const v = await input({ message: 'Сколько спикеров?', default: '2' });
   const n = parseInt(v, 10);
-  if (Number.isFinite(n) && n > 0 && n !== detected) {
-    console.log(chalk.dim(`  Пересчитываю на ${n} (это снова займёт время)...`));
-    return n;
-  }
+  if (Number.isFinite(n) && n > 0) return n;
+  console.log(chalk.yellow('  Не число — определю автоматически.'));
   return 0;
+}
+
+// Подмешивает подсказку в опции. Вызывается в каждом режиме после выбора
+// источника — чтобы вопрос стоял рядом со стартом, а не в начале навигации.
+async function withSpeakerCount(opts) {
+  if (opts.provider !== 'assembly') return opts;
+  return { ...opts, numSpeakers: await askSpeakersExpected() };
 }
 
 // ─── Обработка ошибки ключа Deepgram ────────────────────────────────
@@ -265,12 +278,11 @@ async function ensureProviderKey(cfg) {
   return { ok: true, apiKey: await ensureApiKey(cfg) };
 }
 
-function transcriptionOptionsFromConfig(cfg, { diarCount = true } = {}) {
+function transcriptionOptionsFromConfig(cfg) {
   const opts = optionsFromConfig(cfg);
   opts.summarize = buildSummarizeCb(cfg);
   opts.provider = cfg.provider || 'deepgram';
   opts.assemblyKey = cfg.assemblyKey;
-  if (diarCount) opts.onDiarCount = cfg.provider === 'assembly' ? askDiarCount : undefined;
   return opts;
 }
 
@@ -384,6 +396,7 @@ async function runFileMode(apiKey, opts, cfg) {
   console.log(`  ${chalk.bold(basename(filePath))} ${chalk.dim(`(${mb} MB)`)}`);
 
   const outputDir = await askOutputDir(cfg, dirname(filePath));
+  opts = await withSpeakerCount(opts);
   console.log();
   const out = await runTranscription(filePath, { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
   if (out) await offerPostActions(out);
@@ -400,6 +413,8 @@ async function runBatchMode(apiKey, opts, cfg) {
   for (const f of files) console.log(`    ${basename(f)}`);
 
   const outputDir = await askOutputDir(cfg, dirname(files[0]));
+  // Одна подсказка на всю пачку: файлы выбирают вместе, обычно это однотипные записи.
+  opts = await withSpeakerCount(opts);
   console.log();
   let anyOk = false;
   for (let i = 0; i < files.length; i++) {
@@ -418,6 +433,7 @@ async function runUrlMode(apiKey, opts, cfg) {
   const url = await input({ message: 'Вставьте ссылку:' });
   if (!isUrl(url)) { console.log(chalk.red('  Нужна ссылка http(s)://')); return; }
   const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir());
+  opts = await withSpeakerCount(opts);
   console.log();
   const out = await runTranscription(url.trim(), { ...opts, apiKey, outputDir, onSpeakers: opts.speakers ? askSpeakerNames : undefined });
   if (out) await offerPostActions(out);
@@ -580,10 +596,10 @@ async function runMeetMode(apiKey, opts, cfg) {
   // Чистим авто-имя Meet (файл или, если файл назван кодом встречи, папка
   // встречи); если и там дефолт — имя возьмётся из саммари.
   const { clean, isGeneric } = recordingName(selectedFile);
-  opts.name = clean; opts.nameIsGeneric = isGeneric;
 
   // Куда сохранить
   const outputDir = await askOutputDir(cfg, cfg.lastOutputDir || homedir(), 'Домашняя папка');
+  opts = await withSpeakerCount({ ...opts, name: clean, nameIsGeneric: isGeneric });
 
   // Скачиваем во временную папку
   const tmpDir = makeTmp();
@@ -735,7 +751,7 @@ async function editProviderSettings(cfg) {
       if (!cfg.assemblyKey) { console.log(chalk.yellow('  Сначала задайте ключ AssemblyAI.')); continue; }
       cfg.provider = 'assembly'; saveConfig(cfg);
       console.log(chalk.green('  Провайдер: AssemblyAI'));
-      console.log(chalk.dim('  Число спикеров спросит в потоке: «Найдено N — столько и есть?»'));
+      console.log(chalk.dim('  Число спикеров спросит перед запуском (можно «не знаю»).'));
     } else if (action === 'key') {
       const k = await input({ message: 'Ключ AssemblyAI:' });
       if (k.trim()) { cfg.assemblyKey = k.trim(); saveConfig(cfg); console.log(chalk.green('  Сохранено.')); }
@@ -926,7 +942,9 @@ export async function cli() {
   if (args.includes('--install-shortcut')) { showHeader(); createShortcut(); return; }
   if (args.includes('--remove-shortcut')) { showHeader(); removeShortcut() ? console.log(chalk.green('Удален.')) : console.log(chalk.yellow('Не найден.')); return; }
 
-  const source = args.find(a => !a.startsWith('-'));
+  // Значения флагов (`-n 2`) не должны попадать в source: `transcribe -n 2 rec.mp3`
+  // иначе транскрибирует несуществующий файл «2».
+  const source = args.find((a, i) => !a.startsWith('-') && !VALUE_FLAGS.has(args[i - 1]));
   if (source === 'upgrade' || args.includes('--upgrade')) { showHeader(); await runUpgrade(); return; }
   if (!source) { await interactiveMenu(); return; }
 
@@ -940,9 +958,14 @@ export async function cli() {
   const lang = getFlag(args, '-l') || getFlag(args, '--lang') || cfg.lang || 'ru';
   const speakers = args.includes('--no-speakers') ? false
     : (args.includes('-s') || args.includes('--speakers') || (cfg.speakers ?? true));
+  // Подсказка числа спикеров: в быстром режиме спросить негде, поэтому флагом.
+  const numSpeakers = Math.max(0, parseInt(getFlag(args, '-n') || getFlag(args, '--speakers-expected') || '0', 10) || 0);
+  if (numSpeakers && (cfg.provider || 'deepgram') !== 'assembly') {
+    console.log(chalk.dim('  -n игнорируется: у Deepgram нет подсказки числа спикеров.'));
+  }
   const outputDir = getFlag(args, '-o') || getFlag(args, '--output-dir') || (isUrl(source) ? process.cwd() : dirname(resolve(source)));
 
-  const opts = transcriptionOptionsFromConfig(cfg, { diarCount: false });
+  const opts = transcriptionOptionsFromConfig(cfg);
   const apiKey = opts.provider === 'assembly'
     ? ''
     : (getFlag(args, '--api-key') || cfg.apiKey || process.env.DEEPGRAM_API_KEY || '');
@@ -962,6 +985,7 @@ export async function cli() {
     out = await runTranscription(source, {
       ...opts,
       speakers,
+      numSpeakers,
       lang,
       autoLang: false,                       // быстрый режим — язык явный (флаг/конфиг)
       apiKey,
@@ -973,6 +997,9 @@ export async function cli() {
   }
   if (!out) process.exitCode = 1;
 }
+
+// Флаги, за которыми идёт значение — нужны и getFlag, и резолву source.
+const VALUE_FLAGS = new Set(['-l', '--lang', '-o', '--output-dir', '-n', '--speakers-expected', '--api-key']);
 
 function getFlag(args, flag) {
   const i = args.indexOf(flag);

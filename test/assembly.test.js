@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { transcribeAssembly, uploadAssembly } from '../assembly.js';
+import { transcribeAssembly, uploadAssembly, isDiarizationCollapsed } from '../assembly.js';
 import { transcribeToUtterances } from '../engine.js';
 
 // Поллинг AssemblyAI: дедлайн, r.ok, ретраи транзиентных сбоев БЕЗ пересабмита
@@ -44,7 +44,8 @@ function fakeApi(script = {}) {
   const uploadScript = Array.isArray(script) ? [] : (script.uploadScript || []);
   const submitScript = Array.isArray(script) ? [] : (script.submitScript || []);
   const uploadUrl = Array.isArray(script) ? 'https://u' : (script.uploadUrl || 'https://u');
-  const calls = { upload: 0, submit: 0, poll: 0, submitBody: null, submitBodies: [] };
+  const paragraphsScript = Array.isArray(script) ? [] : (script.paragraphsScript || []);
+  const calls = { upload: 0, submit: 0, poll: 0, paragraphs: 0, submitBody: null, submitBodies: [] };
   globalThis.fetch = async (url, opts = {}) => {
     if (url.endsWith('/upload')) {
       calls.upload++;
@@ -63,6 +64,12 @@ function fakeApi(script = {}) {
       const step = submitScript.shift();
       if (step) return step(opts);
       return res(200, { id: `job${calls.submit}` });
+    }
+    if (url.endsWith('/paragraphs')) {
+      calls.paragraphs++;
+      const step = paragraphsScript.shift();
+      if (step) return step();
+      return res(200, { paragraphs: [] });
     }
     calls.poll++;
     const step = pollScript.shift();
@@ -222,4 +229,143 @@ test('невосстановимый 4xx на поллинге падает ср
 test('status=error от AssemblyAI пробрасывается с текстом', async () => {
   fakeApi([() => res(200, { status: 'error', error: 'audio too short' })]);
   await assert.rejects(() => transcribeAssembly(audio, OPTS), /audio too short/);
+});
+
+// ─── Схлопнувшаяся диаризация → абзацы ──────────────────────────────────────
+// AssemblyAI на длинных записях иногда отдаёт одного спикера и одну utterance
+// на весь файл: транскрипт становится стеной текста с единственным таймстампом.
+// Абзацы того же job'а повторно не биллятся, поэтому берём их.
+
+const collapsed = (duration, utterances) => () => res(200, {
+  status: 'completed', audio_duration: duration, utterances,
+});
+const ONE_UTTERANCE = [{ speaker: 'A', start: 20011, end: 5399842, text: 'вся запись одним куском' }];
+
+test('isDiarizationCollapsed: один спикер + редкие реплики на длинной записи', () => {
+  assert.equal(isDiarizationCollapsed(ONE_UTTERANCE, 5401), true);
+});
+
+test('isDiarizationCollapsed: короткая запись и пустой список не считаются схлопнувшимися', () => {
+  assert.equal(isDiarizationCollapsed(ONE_UTTERANCE, 60), false);
+  assert.equal(isDiarizationCollapsed([], 5401), false);
+});
+
+test('isDiarizationCollapsed: диалог и плотный монолог не трогаем', () => {
+  const dialogue = [{ speaker: 'A' }, { speaker: 'B' }];
+  assert.equal(isDiarizationCollapsed(dialogue, 5401), false);
+  const dense = Array.from({ length: 250 }, () => ({ speaker: 'A' }));
+  assert.equal(isDiarizationCollapsed(dense, 5401), false);
+});
+
+test('схлопнувшаяся диаризация: реплики берутся из абзацев, метка спикера сохраняется', async () => {
+  const calls = fakeApi({
+    pollScript: [collapsed(5401, ONE_UTTERANCE)],
+    paragraphsScript: [() => res(200, { paragraphs: [
+      { start: 20011, end: 37000, text: 'первый абзац' },
+      { start: 37000, end: 56000, text: 'второй абзац' },
+      { start: 56000, end: 81000, text: '  ' },
+    ] })],
+  });
+  const r = await transcribeAssembly(audio, OPTS);
+  assert.equal(calls.paragraphs, 1);
+  assert.equal(calls.submit, 1);            // повторной (платной) транскрипции нет
+  assert.equal(r.diarizationFallback, true);
+  assert.equal(r.utterances.length, 2);     // пустой абзац отброшен
+  assert.equal(r.utterances[0].start, 20.011);
+  assert.equal(r.utterances[1].transcript, 'второй абзац');
+  assert.deepEqual([...new Set(r.utterances.map(u => u.speaker))], ['A']);
+  assert.equal(r.duration, 5401);
+});
+
+test('абзацы недоступны → транскрипт не теряем, падения нет', async () => {
+  const calls = fakeApi({
+    pollScript: [collapsed(5401, ONE_UTTERANCE)],
+    paragraphsScript: [
+      () => res(500, { error: 'boom' }),
+      () => res(500, { error: 'boom' }),
+      () => res(500, { error: 'boom' }),
+    ],
+  });
+  const r = await transcribeAssembly(audio, { ...OPTS, retryBaseMs: 1 });
+  assert.equal(calls.paragraphs, 3);
+  assert.equal(r.diarizationFallback, false);
+  assert.equal(r.utterances.length, 1);
+  assert.equal(r.utterances[0].transcript, 'вся запись одним куском');
+});
+
+test('абзацев не больше, чем реплик → остаёмся на репликах', async () => {
+  fakeApi({
+    pollScript: [collapsed(5401, ONE_UTTERANCE)],
+    paragraphsScript: [() => res(200, { paragraphs: [{ start: 0, end: 10, text: 'один' }] })],
+  });
+  const r = await transcribeAssembly(audio, OPTS);
+  assert.equal(r.diarizationFallback, false);
+  assert.equal(r.utterances[0].transcript, 'вся запись одним куском');
+});
+
+test('нормальный диалог: за абзацами не ходим', async () => {
+  const calls = fakeApi([() => res(200, { status: 'processing' })]);
+  const r = await transcribeAssembly(audio, OPTS);
+  assert.equal(calls.paragraphs, 0);
+  assert.equal(r.diarizationFallback, false);
+  assert.equal(r.speakers, 2);
+});
+
+test('isDiarizationCollapsed: оба порога binding — 119 с нет, 120 с да', () => {
+  assert.equal(isDiarizationCollapsed(ONE_UTTERANCE, 119), false); // короче минимума
+  assert.equal(isDiarizationCollapsed(ONE_UTTERANCE, 120), true);
+  // плотность: 3 реплики на 180 с — это ровно одна в минуту, уже не схлопнулось
+  const three = [{ speaker: 'A' }, { speaker: 'A' }, { speaker: 'A' }];
+  assert.equal(isDiarizationCollapsed(three, 180), false);
+  assert.equal(isDiarizationCollapsed(three.slice(0, 2), 180), true);
+});
+
+test('isDiarizationCollapsed: без длительности не гадаем', () => {
+  assert.equal(isDiarizationCollapsed(ONE_UTTERANCE, undefined), false);
+  assert.equal(isDiarizationCollapsed(ONE_UTTERANCE, 0), false);
+});
+
+test('усечённые абзацы не подменяют оплаченный транскрипт', async () => {
+  fakeApi({
+    pollScript: [collapsed(5401, ONE_UTTERANCE)],
+    // Формально абзацев больше (2 > 1), но текста в них почти нет — это обрезок.
+    paragraphsScript: [() => res(200, { paragraphs: [
+      { start: 0, end: 1000, text: 'вся' },
+      { start: 1000, end: 2000, text: 'запись' },
+    ] })],
+  });
+  const r = await transcribeAssembly(audio, OPTS);
+  assert.equal(r.diarizationFallback, false);
+  assert.equal(r.utterances.length, 1);
+  assert.equal(r.utterances[0].transcript, 'вся запись одним куском');
+});
+
+test('404 на абзацах не ретраится', async () => {
+  const calls = fakeApi({
+    pollScript: [collapsed(5401, ONE_UTTERANCE)],
+    paragraphsScript: [() => res(404, { error: 'not found' })],
+  });
+  const r = await transcribeAssembly(audio, { ...OPTS, retryBaseMs: 1 });
+  assert.equal(calls.paragraphs, 1);
+  assert.equal(r.diarizationFallback, false);
+});
+
+test('diarizationFallback доходит до transcribeToUtterances', async () => {
+  fakeApi({
+    pollScript: [collapsed(5401, ONE_UTTERANCE)],
+    paragraphsScript: [() => res(200, { paragraphs: [
+      { start: 20011, end: 37000, text: 'первый абзац подлиннее' },
+      { start: 37000, end: 56000, text: 'второй абзац подлиннее' },
+    ] })],
+  });
+  const r = await transcribeToUtterances({ uploadUrl: 'https://u', apiKey: 'k', pollIntervalMs: 1 });
+  assert.equal(r.diarizationFallback, true);
+  assert.equal(r.utterances.length, 2);
+});
+
+test('нормальный диалог: diarizationFallback=false доходит до transcribeToUtterances', async () => {
+  fakeApi();
+  const r = await transcribeToUtterances({ uploadUrl: 'https://u', apiKey: 'k', pollIntervalMs: 1 });
+  assert.equal(r.diarizationFallback, false);
+  assert.equal(r.speakers, 2);
 });

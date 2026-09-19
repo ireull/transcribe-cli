@@ -250,3 +250,53 @@ test('callDeepgram: 401 → isAuthError без retry', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ─── Один спикер ────────────────────────────────────────────────────────────
+// Склейка подряд идущих реплик одного спикера у монолога «подряд идущие» — это
+// вся запись: без потолка блок разрастался на часы и от транскрипта оставался
+// один таймстамп. Потолок — MERGE_MAX_SPAN_S.
+
+const soloData = {
+  metadata: { duration: 5401 },
+  results: { utterances: [
+    { speaker: 'A', start: 20, end: 37, transcript: 'Первый абзац.' },
+    { speaker: 'A', start: 37, end: 56, transcript: 'Второй абзац.' },
+    { speaker: 'A', start: 3700, end: 3720, transcript: 'Через час.' },
+  ] },
+};
+
+test('formatMarkdown: монолог — склейка не переходит границу MERGE_MAX_SPAN_S', () => {
+  const md = formatMarkdown(soloData, true, '', {}, true);
+  // 20 и 37 — в одном окне, 3700 — уже в другом
+  assert.match(md, /\*\*\[00:20\]\*\*\nПервый абзац\. Второй абзац\./);
+  assert.match(md, /\*\*\[1:01:40\]\*\*\nЧерез час\./);
+  assert.equal((md.match(/^\*\*\[/gm) || []).length, 2);
+});
+
+test('formatMarkdown: монолог — метка «Speaker A» не печатается', () => {
+  const md = formatMarkdown(soloData, true, '', {}, true);
+  assert.ok(!md.includes('Speaker'));
+});
+
+test('formatMarkdown: монолог с именем — имя показываем в каждом блоке', () => {
+  const md = formatMarkdown(soloData, true, '', { A: 'Вадим' }, true);
+  assert.equal((md.match(/\*\*Вадим\*\*/g) || []).length, 2);
+});
+
+test('formatMarkdown: часовой монолог из пофразовых реплик (как у Deepgram) не даёт ни стены, ни блока на фразу', () => {
+  // Deepgram отдаёт реплики уровня предложения: раз в ~3 секунды.
+  const utterances = Array.from({ length: 1200 }, (_, i) => ({
+    speaker: 0, start: i * 3, end: i * 3 + 3, transcript: `Фраза ${i}.`,
+  }));
+  const md = formatMarkdown({ metadata: { duration: 3600 }, results: { utterances } }, true, '', {}, true);
+  const blocks = (md.match(/^\*\*\[/gm) || []).length;
+  assert.ok(blocks > 1, 'не одна стена текста');
+  assert.ok(blocks < 100, `не блок на фразу, а ${blocks} блоков`);
+  assert.match(md, /\*\*\[00:00\]\*\*\nФраза 0\. Фраза 1\./);
+});
+
+test('formatMarkdown: диалог — склейка по спикеру работает как раньше', () => {
+  const md = formatMarkdown(utterData, true, '', {}, true);
+  assert.match(md, /\*\*Speaker 0\*\* \[00:00\]\nПривет\. Как дела\?/);
+  assert.equal((md.match(/^\*\*Speaker/gm) || []).length, 3);
+});
