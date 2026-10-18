@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { optionsFromConfig } from '../app.js';
+import { optionsFromConfig, quickModeMerge } from '../app.js';
 
 // Опции перед запуском больше не спрашиваются — runTranscription получает их
 // из конфига через optionsFromConfig. Семантика: отсутствие ключа = вкл
@@ -40,4 +40,16 @@ test('optionsFromConfig: не-boolean мусор не выключает опц�
   const opts = optionsFromConfig({ speakers: 1, mergeUtterances: 'yes' });
   assert.equal(opts.speakers, true);
   assert.equal(opts.merge, true);
+});
+
+// Быстрый режим: склейка из конфига, но --no-merge ее выключает при любом конфиге.
+
+test('quickModeMerge: без флага склейка берётся из конфига', () => {
+  assert.equal(quickModeMerge(['voice.oga'], {}), true);
+  assert.equal(quickModeMerge(['voice.oga'], { mergeUtterances: false }), false);
+});
+
+test('quickModeMerge: --no-merge выключает склейку, даже если она включена в конфиге', () => {
+  assert.equal(quickModeMerge(['voice.oga', '-s', '--no-merge'], {}), false);
+  assert.equal(quickModeMerge(['voice.oga', '--no-merge'], { mergeUtterances: true }), false);
 });

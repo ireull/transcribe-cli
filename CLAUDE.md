@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 node cli.js                      # запуск из исходников (интерактивное меню)
 node cli.js <file-or-url>        # быстрый режим без меню
 node cli.js <src> -l en -s -o ./out   # флаги: язык, спикеры, папка вывода
+node cli.js <src> -s --no-merge       # блок с таймкодом на каждую фразу, склейка из конфига игнорируется
 
 npm i -g .                       # поставить локальную сборку глобально (из клона)
 ```

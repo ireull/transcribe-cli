@@ -302,6 +302,13 @@ export function optionsFromConfig(cfg) {
   };
 }
 
+// Склейка реплик в быстром режиме. --no-merge важнее настройки: вызывающему
+// скрипту нужен один вывод на любой машине — блок со своим таймкодом на каждую
+// фразу, а склейку в конфиге каждый ставит под себя.
+export function quickModeMerge(args, cfg) {
+  return args.includes('--no-merge') ? false : optionsFromConfig(cfg).merge;
+}
+
 // Однострочная сводка активных опций — печатается перед запуском, чтобы было
 // видно, с чем пойдёт транскрипция, без лишнего промпта.
 function optionsSummary(opts) {
@@ -963,6 +970,7 @@ export async function cli() {
   if (numSpeakers && (cfg.provider || 'deepgram') !== 'assembly') {
     console.log(chalk.dim('  -n игнорируется: у Deepgram нет подсказки числа спикеров.'));
   }
+  const merge = quickModeMerge(args, cfg);
   const outputDir = getFlag(args, '-o') || getFlag(args, '--output-dir') || (isUrl(source) ? process.cwd() : dirname(resolve(source)));
 
   const opts = transcriptionOptionsFromConfig(cfg);
@@ -986,6 +994,7 @@ export async function cli() {
       ...opts,
       speakers,
       numSpeakers,
+      merge,
       lang,
       autoLang: false,                       // быстрый режим — язык явный (флаг/конфиг)
       apiKey,
