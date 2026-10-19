@@ -61,7 +61,7 @@
   - Быстрый режим: `-n / --speakers-expected`; значения флагов больше не попадают в `source` (`-n 2 rec.mp3` раньше
     транскрибировал файл «2»); под Deepgram флаг явно помечается как игнорируемый.
 
-- [ ] TCL-006 Автопубликация в npm из GitHub Actions (Trusted Publishing)		#release #ci @status:doing @owner:claude-opus #user-required
+- [x] TCL-006 Автопубликация в npm из GitHub Actions (Trusted Publishing)		#release #ci @status:done @owner:claude-opus
   Публиковать может только владелец пакета (ireull) со своей машины, поэтому 1.22.0 месяц лежит невыпущенной
   (в npm последняя 1.21.0 от 18.09). Сделать: workflow на push в master — тесты, затем `npm publish`, если версии
   из package.json ещё нет в npm; вход через Trusted Publishing (OIDC), без токенов; CLAUDE.md про новый порядок.
@@ -72,7 +72,5 @@
   - Проверено локально: тесты из чистого клона, обе ветки проверки версии, `npm publish --dry-run` без node_modules
     даёт те же 14 файлов, что опубликованная 1.21.0.
   - CLAUDE.md: публикация автоматическая, неопубликованная версия в master = релиз, workflow привязан к настройке npm.
-  **Осталось (владелец npm, ireull):** на npmjs.com добавить Trusted Publisher — GitHub Actions, `ireull` /
-  `transcribe-cli` / `publish.yml`, без environment, отметить «npm publish» (по умолчанию разрешён только
-  `npm stage publish`). Первая успешная публикация — в течение 2 дней, иначе настройку придётся пересоздать.
-  После первого зелёного прогона — `mdtask done TCL-006`; по желанию Publishing access → «Require 2FA and disallow tokens».
+  - На npmjs.com заведён Trusted Publisher (`ireull/transcribe-cli`, `publish.yml`, разрешён `npm publish`), статус
+    Valid. Первый релиз через CI — 1.23.0 (вместе с 1.22.0), с provenance; без настройки job падал с E404.
