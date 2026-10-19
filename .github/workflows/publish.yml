@@ -1,0 +1,67 @@
+# Публикация в npm: на push в master — тесты, затем npm publish, если версии из
+# package.json ещё нет в реестре (версия уже опубликована — push ничего не выпускает).
+# Вход — Trusted Publishing (OIDC), токенов нет. На npmjs.com доверенным у пакета указан
+# именно этот файл: после переименования публикация перестанет проходить.
+name: Publish
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+# Прогоны не публикуют параллельно: новый ждёт текущий (из ожидающих GitHub оставляет последний).
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm test
+      - name: Версии ещё нет в npm?
+        id: version
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if [ "$(npm view "$name@$version" version 2>/dev/null)" = "$version" ]; then
+            echo "::notice::$name@$version уже в npm — публиковать нечего"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Отдельный job без npm ci: id-token есть только здесь, и чужой код (зависимости,
+  # их install-скрипты, тесты) не может выписать себе токен на публикацию пакета.
+  # Сборки нет — пакуются *.js прямо из checkout, node_modules не нужны.
+  # Ветку проверяем и здесь: npm сверяет только репозиторий и имя файла, и если триггер
+  # расширят (PR, другие ветки), неслитый код всё равно не должен уйти в npm.
+  publish:
+    needs: test
+    if: github.ref == 'refs/heads/master' && needs.test.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false # без кэша в релизном job: отравленный кэш дотянулся бы до OIDC
+      - run: npm publish
