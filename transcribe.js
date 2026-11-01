@@ -12,7 +12,7 @@ import { fetchWithTimeout, withRetry } from './http.js';
 
 // Реэкспорт ядровых утилит — публичная поверхность transcribe.js не меняется
 // (их импортируют app.js и тесты). Единый источник — engine.js.
-export { formatTs, opusEncodeArgs } from './engine.js';
+export { formatTs, opusEncodeArgs, speakerLabel } from './engine.js';
 
 const DEEPGRAM_API = 'https://api.deepgram.com/v1/listen';
 const DEEPGRAM_TIMEOUT_MS = 30 * 60000;
@@ -236,6 +236,54 @@ export function formatMarkdown(data, speakers, title = '', speakerNames = {}, me
   return lines.join('\n');
 }
 
+// Deepgram режет utterances не по смене спикера: в быстром диалоге слова двух людей
+// попадают в одну реплику, а `speaker` у неё один. Метки слов точнее — режем по ним,
+// с двумя поправками на их шум. Метка, которой нет ни у одной реплики, спикером не
+// считается: новое имя в переименовании хуже слова у соседа. Короткий кусок, оборванный
+// посреди фразы, относится к следующим словам: реплика не заканчивается на полуслове.
+// speaker_confidence здесь не годится: её шкала разная от записи к записи.
+const MAX_FRAGMENT_WORDS = 3;
+
+const wordText = w => w.punctuated_word ?? w.word;
+
+function endsMidPhrase(run, next) {
+  return run.words.length <= MAX_FRAGMENT_WORDS
+    && !/[.,!?…:;]$/.test(wordText(run.words.at(-1)))
+    && /^\p{Ll}/u.test(wordText(next.words[0]));
+}
+
+function addToRuns(runs, speaker, words) {
+  const last = runs.at(-1);
+  if (last?.speaker === speaker) last.words.push(...words);
+  else runs.push({ speaker, words: [...words] });
+}
+
+export function splitBySpeaker(utterances = []) {
+  const known = new Set(utterances.map(u => u.speaker));
+  return utterances.flatMap(u => {
+    const labeled = [];
+    for (const w of u.words || []) {
+      addToRuns(labeled, known.has(w.speaker) ? w.speaker : (labeled.at(-1)?.speaker ?? u.speaker), [w]);
+    }
+    // С конца: обрывок перед обрывком должен увидеть уже итогового спикера.
+    for (let i = labeled.length - 2; i >= 0; i--) {
+      if (endsMidPhrase(labeled[i], labeled[i + 1])) labeled[i].speaker = labeled[i + 1].speaker;
+    }
+    const runs = [];
+    for (const { speaker, words } of labeled) addToRuns(runs, speaker, words);
+
+    if (!runs.length || (runs.length === 1 && runs[0].speaker === u.speaker)) return [u];
+    return runs.map(({ speaker, words }) => ({
+      ...u,
+      speaker,
+      start: words[0].start,
+      end: words.at(-1).end,
+      transcript: words.map(wordText).join(' '),
+      words,
+    }));
+  });
+}
+
 /**
  * Извлекает уникальных спикеров и несколько реплик каждого с таймстампами.
  * Возвращает [{id, lines: [{text, start}]}]
@@ -345,6 +393,7 @@ export async function runTranscription(source, { speakers, lang, autoLang = fals
       const mb = (statSync(audioPath).size / 1048576).toFixed(1);
       spinner.text = chalk.cyan(`Транскрибирую (${mb} MB)...`);
       raw = await callDeepgram(audioPath, { model, lang, autoLang, speakers, numerals, apiKey });
+      if (speakers && raw.results?.utterances) raw.results.utterances = splitBySpeaker(raw.results.utterances);
       spinner.succeed('Транскрибировано');
     }
 

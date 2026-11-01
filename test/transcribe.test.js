@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  formatTs, sanitizeFilename, isUrl, getSpeakerPreviews,
+  formatTs, sanitizeFilename, isUrl, getSpeakerPreviews, splitBySpeaker, speakerLabel,
   formatMarkdown, buildDeepgramParams, opusEncodeArgs,
   runTranscription, callDeepgram,
 } from '../transcribe.js';
@@ -55,8 +55,22 @@ test('formatMarkdown: склейка подряд идущих реплик од
 test('formatMarkdown: merge=false — каждая реплика отдельным блоком', () => {
   const md = formatMarkdown(utterData, true, '', {}, false);
   assert.equal((md.match(/\*\*Speaker/g) || []).length, 4);
-  assert.match(md, /\*\*Speaker 0\*\* \[00:00\]\nПривет\./);
-  assert.match(md, /\*\*Speaker 0\*\* \[00:03\]\nКак дела\?/);
+  assert.match(md, /\*\*Speaker 1\*\* \[00:00\]\nПривет\./);
+  assert.match(md, /\*\*Speaker 1\*\* \[00:03\]\nКак дела\?/);
+});
+
+test('speakerLabel: номера Deepgram с единицы, буквы AssemblyAI как есть', () => {
+  assert.equal(speakerLabel(0), 'Speaker 1');
+  assert.equal(speakerLabel(3), 'Speaker 4');
+  assert.equal(speakerLabel('A'), 'Speaker A');
+  assert.equal(speakerLabel(undefined), 'Speaker ?');
+});
+
+test('formatMarkdown: имя ключуется исходным id, метка без имени — с единицы', () => {
+  const md = formatMarkdown(utterData, true, '', { 1: 'Мария' }, false);
+  assert.match(md, /\*\*Speaker 1\*\* \[00:00\]/);
+  assert.match(md, /\*\*Мария\*\* \[00:05\]/);
+  assert.doesNotMatch(md, /Speaker 2/);
 });
 
 test('formatMarkdown: блок саммари вставляется', () => {
@@ -86,6 +100,120 @@ test('getSpeakerPreviews: уникальные спикеры, максимум 
   assert.equal(p.length, 2);
   const sp0 = p.find(x => x.id === 0);
   assert.equal(sp0.lines.length, 4); // ограничение в 4
+});
+
+// ─── Смена спикера внутри реплики ───────────────────────────────────────────
+// Deepgram режет utterances не по смене спикера: слова двух людей лежат в одной
+// реплике, а `speaker` у неё один — вторая фраза уходила первому спикеру.
+
+const word = (text, speaker, start) => ({ word: text.toLowerCase(), punctuated_word: text, speaker, start, end: start + 1 });
+
+const mixedUtterance = {
+  speaker: 0, start: 15, end: 20, transcript: 'Когда будет отчёт? Завтра пришлю.',
+  words: [
+    word('Когда', 0, 15), word('будет', 0, 16), word('отчёт?', 0, 17),
+    word('Завтра', 1, 18), word('пришлю.', 1, 19),
+  ],
+};
+
+test('splitBySpeaker: реплика двух спикеров режется по меткам слов', () => {
+  const r = splitBySpeaker([mixedUtterance, { speaker: 1, start: 20, end: 21, transcript: 'Да.', words: [word('Да.', 1, 20)] }]);
+  assert.deepEqual(r.map(u => u.speaker), [0, 1, 1]);
+  assert.equal(r[0].transcript, 'Когда будет отчёт?');
+  assert.equal(r[1].transcript, 'Завтра пришлю.');
+  assert.deepEqual([r[1].start, r[1].end], [18, 20]);   // таймстамп — от своего первого слова
+  assert.deepEqual(r[1].words.map(w => w.word), ['завтра', 'пришлю.']);
+});
+
+test('splitBySpeaker: реплика одного спикера не меняется', () => {
+  const u = { speaker: 0, start: 1, end: 3, transcript: 'Текст  как есть.', words: [word('Текст', 0, 1), word('как', 0, 2), word('есть.', 0, 3)] };
+  assert.strictEqual(splitBySpeaker([u])[0], u);
+});
+
+// Метки слов богаче меток реплик: на них всплывают «спикеры» из одного слова.
+// Это лишние имена в переименовании — ровно то, на что и так жалуются.
+test('splitBySpeaker: метка только на словах не создаёт нового спикера', () => {
+  const u = { speaker: 0, start: 1, end: 4, transcript: 'раз два три', words: [word('раз', 0, 1), word('два', 7, 2), word('три', 0, 3)] };
+  assert.strictEqual(splitBySpeaker([u])[0], u);
+});
+
+const reply = { speaker: 1, start: 30, end: 31, transcript: 'Да.', words: [word('Да.', 1, 30)] };
+
+// На реальных записях метки слов откалывали от фразы куски в одно-два слова:
+// «релиз будет / через / неделю» с чужим спикером на «через».
+test('splitBySpeaker: короткий кусок посреди фразы остаётся с её продолжением', () => {
+  const u = {
+    speaker: 0, start: 1, end: 4, transcript: 'будет через неделю',
+    words: [word('будет', 0, 1), word('через', 1, 2), word('неделю', 0, 3)],
+  };
+  assert.deepEqual(splitBySpeaker([u, reply]), [u, reply]);
+});
+
+test('splitBySpeaker: короткий кусок перед чужой фразой уходит к её спикеру', () => {
+  const r = splitBySpeaker([{
+    speaker: 0, start: 1, end: 5, transcript: 'А что нового по проекту?',
+    words: [word('А', 0, 1), word('что', 0, 2), word('нового', 1, 3), word('по', 1, 4), word('проекту?', 1, 5)],
+  }, reply]);
+  assert.deepEqual(r.map(u => [u.speaker, u.transcript]), [[1, 'А что нового по проекту?'], [1, 'Да.']]);
+});
+
+// Длинный кусок — уже не шум: реплика вполне могла прерваться на полуслове.
+test('splitBySpeaker: длинный кусок без знака на конце отделяется', () => {
+  const r = splitBySpeaker([{
+    speaker: 0, start: 1, end: 7, transcript: 'Окей, мы вроде решили не срочно',
+    words: [word('Окей,', 1, 1), word('мы', 1, 2), word('вроде', 1, 3), word('решили', 1, 4), word('не', 0, 5), word('срочно', 0, 6)],
+  }, reply]);
+  assert.deepEqual(r.map(u => u.speaker), [1, 0, 1]);
+});
+
+// speaker_confidence намеренно не используется: её шкала разная от записи к записи,
+// и порог, подходящий одной записи, на другой отбрасывал верные смены спикера.
+test('splitBySpeaker: законченная короткая реплика отделяется при любой уверенности', () => {
+  const u = {
+    speaker: 0, start: 1, end: 4, transcript: 'Договоримся заранее. Согласен.',
+    words: [word('Договоримся', 0, 1), word('заранее.', 0, 2), { ...word('Согласен.', 1, 3), speaker_confidence: 0.4 }],
+  };
+  const r = splitBySpeaker([u, reply]);
+  assert.deepEqual(r.map(x => x.transcript), ['Договоримся заранее.', 'Согласен.', 'Да.']);
+});
+
+test('splitBySpeaker: без меток на словах реплика не меняется', () => {
+  const bare = { speaker: 0, start: 0, end: 1, transcript: 'нет слов' };
+  const unlabeled = { speaker: 0, start: 1, end: 2, transcript: 'без меток', words: [{ word: 'без' }, { word: 'меток' }] };
+  assert.deepEqual(splitBySpeaker([bare, unlabeled]), [bare, unlabeled]);
+});
+
+test('runTranscription: Deepgram — смена спикера внутри реплики видна в файле и в превью', async () => {
+  const orig = globalThis.fetch;
+  const dir = mkdtempSync(join(tmpdir(), 'tx-run-split-'));
+  const audio = join(dir, 'a.opus');
+  writeFileSync(audio, 'audio');
+  globalThis.fetch = async (_url, opts = {}) => {
+    await drainBody(opts.body);
+    return httpResp(200, { metadata: { duration: 21 }, results: { utterances: [
+      mixedUtterance,
+      { speaker: 1, start: 20, end: 21, transcript: 'Да.', words: [word('Да.', 1, 20)] },
+    ] } });
+  };
+  let previews;
+  try {
+    const out = await runTranscription(audio, {
+      speakers: true,
+      lang: 'ru',
+      apiKey: 'k',
+      merge: false,
+      outputDir: dir,
+      quiet: true,
+      onSpeakers: async p => { previews = p; return {}; },
+    });
+    const md = readFileSync(out, 'utf-8');
+    assert.match(md, /\*\*Speaker 1\*\* \[00:15\]\nКогда будет отчёт\?\n/);
+    assert.match(md, /\*\*Speaker 2\*\* \[00:18\]\nЗавтра пришлю\.\n/);
+    assert.equal(previews.find(p => p.id === 1).lines[0].text, 'Завтра пришлю.');
+  } finally {
+    globalThis.fetch = orig;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('buildDeepgramParams: авто-язык + спикеры + числа', () => {
@@ -297,6 +425,6 @@ test('formatMarkdown: часовой монолог из пофразовых р
 
 test('formatMarkdown: диалог — склейка по спикеру работает как раньше', () => {
   const md = formatMarkdown(utterData, true, '', {}, true);
-  assert.match(md, /\*\*Speaker 0\*\* \[00:00\]\nПривет\. Как дела\?/);
+  assert.match(md, /\*\*Speaker 1\*\* \[00:00\]\nПривет\. Как дела\?/);
   assert.equal((md.match(/^\*\*Speaker/gm) || []).length, 3);
 });

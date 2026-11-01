@@ -37,6 +37,12 @@ export const MIME_MAP = {
 // у монолога гарантирует таймстамп хотя бы раз в минуту.
 export const MERGE_MAX_SPAN_S = 60;
 
+// Метка спикера без имени. Deepgram нумерует с нуля, читателю привычнее с единицы;
+// буквы AssemblyAI показываем как есть. Ключи speakerNames — исходные id, не метка.
+export function speakerLabel(id) {
+  return `Speaker ${typeof id === 'number' ? id + 1 : id ?? '?'}`;
+}
+
 export function formatTs(sec) {
   const s = Math.floor(sec);
   const h = Math.floor(s / 3600);
@@ -99,7 +105,7 @@ export function convertToOpus(input, outDir, { hq = false } = {}) {
 
 /**
  * Собирает Markdown-транскрипт из реплик с диаризацией.
- * Метка спикера по умолчанию — «Speaker <label>» (для AssemblyAI это буквы A/B/C).
+ * Метка спикера по умолчанию — speakerLabel: «Speaker A/B/C» или «Speaker 1/2/3».
  * speakerNames (опц.) перебивает метку: {A:'Иван'} → «**Иван**». По умолчанию пусто —
  * ядро НИКОГО не переименовывает; имена приходят позже (CLI/Telegram).
  *
@@ -136,7 +142,7 @@ export function assembleMarkdown({ utterances = [], duration = 0, title = '', sp
   let i = 0;
   while (i < utterances.length) {
     const spk = utterances[i].speaker;
-    const name = speakerNames[spk] || `Speaker ${spk ?? '?'}`;
+    const name = speakerNames[spk] || speakerLabel(spk);
     const ts = formatTs(utterances[i].start ?? 0);
     lines.push(showSpeaker ? `**${name}** [${ts}]` : `**[${ts}]**`);
     if (merge) {

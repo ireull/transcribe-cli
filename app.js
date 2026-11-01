@@ -9,7 +9,7 @@ import { execSync } from 'child_process';
 import { loadConfig, saveConfig, CONFIG_PATH } from './config.js';
 import { pickFile, pickFiles, pickFolder, pickJsonFile, openFile, revealFile, copyToClipboard } from './dialogs.js';
 import { createShortcut, removeShortcut, shortcutExists } from './shortcut.js';
-import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs } from './transcribe.js';
+import { runTranscription, isUrl, makeTmp, cleanTmp, formatTs, speakerLabel } from './transcribe.js';
 import { hasSaKey, getSaKeyPath, importSaKey, getMeetRecordings, downloadFile, formatSize, formatDate, recordingName, describeRoots, describeCounts, renameDriveFile, driveRenameTarget } from './gdrive.js';
 import { summarizeTranscript } from './summarize.js';
 import { runUpgrade, checkForUpdate, getInstalledVersion, compareVersions } from './upgrade.js';
@@ -28,16 +28,17 @@ function buildSummarizeCb(cfg) {
 // ─── Переименование спикеров ────────────────────────────────────────
 
 async function askSpeakerName(speakerId, hint, savedNames) {
-  const msg = `Speaker ${speakerId} → (${hint}...):`;
+  const label = speakerLabel(speakerId);
+  const msg = `${label} → (${hint}...):`;
   if (savedNames.length === 0) {
-    return input({ message: msg, default: `Speaker ${speakerId}` });
+    return input({ message: msg, default: label });
   }
   const choices = savedNames.map(n => ({ name: n, value: n }));
   choices.push({ name: chalk.dim('Ввести вручную...'), value: '__custom__' });
-  choices.push({ name: chalk.dim(`Оставить Speaker ${speakerId}`), value: `Speaker ${speakerId}` });
+  choices.push({ name: chalk.dim(`Оставить ${label}`), value: label });
   const picked = await select({ message: msg, choices });
   if (picked === '__custom__') {
-    return input({ message: `Speaker ${speakerId} →:`, default: `Speaker ${speakerId}` });
+    return input({ message: `${label} →:`, default: label });
   }
   return picked;
 }
@@ -50,7 +51,7 @@ async function askSpeakerNames(previews) {
   console.log(chalk.cyan('  Найдены спикеры:'));
   for (const { id, lines } of previews) {
     console.log();
-    console.log(`  ${chalk.bold(`Speaker ${id}:`)}`);
+    console.log(`  ${chalk.bold(`${speakerLabel(id)}:`)}`);
     for (const { text, start } of lines) {
       console.log(`    ${chalk.dim(`[${formatTs(start)}]`)} ${text}`);
     }
@@ -64,7 +65,7 @@ async function askSpeakerNames(previews) {
   for (const { id, lines } of previews) {
     const hint = lines[0]?.text.slice(0, 60) || '';
     const name = await askSpeakerName(id, hint, savedNames);
-    if (name.trim() && name.trim() !== `Speaker ${id}`) {
+    if (name.trim() && name.trim() !== speakerLabel(id)) {
       names[id] = name.trim();
     }
   }
